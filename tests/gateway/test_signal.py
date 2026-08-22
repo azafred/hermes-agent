@@ -99,7 +99,17 @@ class TestSignalAdapterInit:
 
     def test_self_message_filtering(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
-        assert adapter._account_normalized == "+15551234567"
+        assert adapter._account_normalized == adapter.account.strip()
+
+    def test_account_identity_cache_accepts_list_accounts_shape(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        bot_uuid = "11111111-1111-4111-8111-111111111111"
+
+        adapter._remember_account_identifiers([
+            {"recipient": adapter.account, "number": adapter.account, "uuid": bot_uuid},
+        ])
+
+        assert bot_uuid in adapter._self_service_ids
 
 
 class TestSignalConnectCleanup:
@@ -123,6 +133,36 @@ class TestSignalConnectCleanup:
         mock_release.assert_called_once_with("signal-phone", "+15551234567")
         assert adapter.client is None
         assert adapter._platform_lock_identity is None
+
+    @pytest.mark.asyncio
+    async def test_connect_discovers_self_uuid_via_get_user_status(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        bot_uuid = "11111111-1111-4111-8111-111111111111"
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=MagicMock(status_code=200))
+        mock_client.aclose = AsyncMock()
+        adapter._rpc = AsyncMock(return_value=[{
+            "recipient": adapter.account,
+            "number": adapter.account,
+            "uuid": bot_uuid,
+            "isRegistered": True,
+        }])
+
+        with patch("gateway.platforms.signal.httpx.AsyncClient", return_value=mock_client), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("gateway.status.release_scoped_lock"), \
+             patch.object(adapter, "_sse_listener", new=AsyncMock()), \
+             patch.object(adapter, "_health_monitor", new=AsyncMock()):
+            assert await adapter.connect() is True
+            adapter._rpc.assert_awaited_once_with(
+                "getUserStatus", {
+                    "account": adapter.account,
+                    "recipient": [adapter.account],
+                },
+                rpc_id="account-identifiers", log_failures=False, timeout=2.0,
+            )
+            assert bot_uuid in adapter._self_service_ids
+            await adapter.disconnect()
 
 
 class TestSignalHelpers:
@@ -1371,21 +1411,23 @@ class TestSignalStopTypingExplicitRPC:
         adapter = _make_signal_adapter(monkeypatch)
         adapter._resolve_recipient = AsyncMock(return_value="uuid-recipient")
         captured = []
+        chat_id = "recipient"
 
         async def mock_rpc(method, params, rpc_id=None, **kwargs):
             captured.append({"method": method, "params": dict(params), "rpc_id": rpc_id})
             return {}
 
         adapter._rpc = mock_rpc
+        adapter._typing_active_chats.add(chat_id)
 
-        await adapter._stop_typing_indicator("+15555550000")
+        await adapter._stop_typing_indicator(chat_id)
 
         assert len(captured) == 1
         assert captured[0]["method"] == "sendTyping"
         assert captured[0]["params"]["stop"] is True
         assert captured[0]["params"]["recipient"] == ["uuid-recipient"]
         assert captured[0]["rpc_id"] == "typing-stop"
-        adapter._resolve_recipient.assert_awaited_once_with("+15555550000")
+        adapter._resolve_recipient.assert_awaited_once_with(chat_id)
 
     @pytest.mark.asyncio
     async def test_stop_typing_indicator_sends_stop_rpc_for_group(self, monkeypatch):
@@ -1397,6 +1439,7 @@ class TestSignalStopTypingExplicitRPC:
             return {}
 
         adapter._rpc = mock_rpc
+        adapter._typing_active_chats.add("group:group123")
 
         await adapter._stop_typing_indicator("group:group123")
 
@@ -1428,6 +1471,7 @@ class TestSignalStopTypingExplicitRPC:
             raise RuntimeError("signal-cli unreachable")
 
         adapter._rpc = failing_rpc
+        adapter._typing_active_chats.update(adapter._typing_failures)
 
         await adapter._stop_typing_indicator("+155****0000")
 
@@ -1454,6 +1498,7 @@ class TestSignalStopTypingExplicitRPC:
 
         adapter._typing_failures["+155****0000"] = 2
         adapter._typing_skip_until["+155****0000"] = 9999999999.0
+        adapter._typing_active_chats.update(adapter._typing_failures)
 
         await adapter._stop_typing_indicator("+155****0000")
 
@@ -1461,6 +1506,127 @@ class TestSignalStopTypingExplicitRPC:
         assert captured == []
         assert "+155****0000" not in adapter._typing_failures
         assert "+155****0000" not in adapter._typing_skip_until
+
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_indicator_is_idempotent_after_active_typing(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._resolve_recipient = AsyncMock(return_value="uuid-recipient")
+        captured = []
+        chat_id = "recipient"
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params), "kwargs": kwargs})
+            return {}
+
+        adapter._rpc = mock_rpc
+        await adapter.send_typing(chat_id)
+        await adapter._stop_typing_indicator(chat_id)
+        await adapter._stop_typing_indicator(chat_id)
+
+        stop_calls = [
+            call for call in captured
+            if call["method"] == "sendTyping" and call["params"].get("stop") is True
+        ]
+        assert len(stop_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_resolution_and_rpc_use_short_timeouts(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._resolve_recipient = AsyncMock(return_value="uuid-recipient")
+        rpc_kwargs = []
+        resolution_timeouts = []
+        chat_id = "recipient"
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            rpc_kwargs.append(kwargs)
+            return {}
+
+        async def bounded_resolution(awaitable, *, timeout):
+            resolution_timeouts.append(timeout)
+            return await awaitable
+
+        adapter._rpc = mock_rpc
+        adapter._typing_active_chats.add(chat_id)
+        with patch("gateway.platforms.signal.asyncio.wait_for", side_effect=bounded_resolution):
+            await adapter._stop_typing_indicator(chat_id)
+
+        assert resolution_timeouts and resolution_timeouts[0] <= 2.0
+        assert rpc_kwargs[0]["timeout"] <= 2.0
+
+
+class TestSignalSelfMentionHandling:
+    BOT_UUID = "11111111-1111-4111-8111-111111111111"
+
+    @staticmethod
+    def _group_envelope(message, mentions):
+        return {
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "22222222-2222-4222-8222-222222222222",
+                "sourceName": "Tester",
+                "timestamp": 1000000000,
+                "dataMessage": {
+                    "message": message,
+                    "mentions": mentions,
+                    "groupInfo": {"groupId": "group123", "groupName": "Test"},
+                },
+            }
+        }
+
+    @pytest.mark.asyncio
+    async def test_uuid_only_self_mention_is_accepted_and_stripped(self, monkeypatch):
+        adapter = _make_signal_adapter(
+            monkeypatch, group_allowed="group123", require_mention=True,
+        )
+        adapter._remember_account_identifiers({
+            "accounts": [{"number": adapter.account, "uuid": self.BOT_UUID}],
+        })
+        captured = []
+
+        async def fake_handle(event):
+            captured.append(event)
+
+        adapter.handle_message = fake_handle
+        await adapter._handle_envelope(self._group_envelope(
+            "\uFFFC please help",
+            [{"start": 0, "length": 1, "uuid": self.BOT_UUID}],
+        ))
+
+        assert len(captured) == 1
+        assert captured[0].text == "please help"
+
+    @pytest.mark.asyncio
+    async def test_self_mention_removal_preserves_unrelated_double_spaces(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="group123")
+        captured = []
+
+        async def fake_handle(event):
+            captured.append(event)
+
+        adapter.handle_message = fake_handle
+        await adapter._handle_envelope(self._group_envelope(
+            "\uFFFC keep  intentional  spacing",
+            [{"start": 0, "length": 1, "number": adapter.account}],
+        ))
+
+        assert captured[0].text == "keep  intentional  spacing"
+
+    @pytest.mark.asyncio
+    async def test_self_mention_uses_utf16_offsets_and_preserves_edge_whitespace(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="group123")
+        captured = []
+
+        async def fake_handle(event):
+            captured.append(event)
+
+        adapter.handle_message = fake_handle
+        await adapter._handle_envelope(self._group_envelope(
+            "😀 \uFFFC please\n",
+            [{"start": 3, "length": 1, "number": adapter.account}],
+        ))
+
+        assert captured[0].text == "😀 please\n"
 
 
 # ---------------------------------------------------------------------------

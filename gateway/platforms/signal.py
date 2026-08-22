@@ -193,7 +193,12 @@ def _remux_aac_to_m4a(aac_data: bytes) -> Optional[Tuple[bytes, str]]:
         return None
 
 
-def _render_mentions(text: str, mentions: list) -> str:
+def _render_mentions(
+    text: str,
+    mentions: List[Dict[str, Any]],
+    *,
+    excluded_identifiers: Optional[set[str]] = None,
+) -> str:
     """Replace Signal mention placeholders (\\uFFFC) with readable @identifiers.
 
     Signal encodes @mentions as the Unicode object replacement character
@@ -203,15 +208,43 @@ def _render_mentions(text: str, mentions: list) -> str:
         return text
     # Sort mentions by start position (reverse) to replace from end to start
     # so indices don't shift as we replace
+    # Signal offsets come from Java body ranges and count UTF-16 code units;
+    # Python string indexes count Unicode code points. Work in UTF-16 bytes so
+    # non-BMP characters before a mention do not shift or corrupt the span.
+    encoded = text.encode("utf-16-le")
     sorted_mentions = sorted(mentions, key=lambda m: m.get("start", 0), reverse=True)
     for mention in sorted_mentions:
         start = mention.get("start", 0)
         length = mention.get("length", 1)
+        if not isinstance(start, int) or not isinstance(length, int) or start < 0 or length < 0:
+            continue
+        start_byte = start * 2
+        end_byte = (start + length) * 2
+        if end_byte > len(encoded):
+            continue
+        prefix = encoded[:start_byte]
+        suffix = encoded[end_byte:]
+        try:
+            prefix.decode("utf-16-le")
+            suffix.decode("utf-16-le")
+        except UnicodeDecodeError:
+            continue
+        identifiers = {mention.get("number"), mention.get("uuid")}
+        identifiers.discard(None)
+        if excluded_identifiers and identifiers & excluded_identifiers:
+            # Drop one ordinary separator after the removed mention when it is
+            # at the start or already has whitespace immediately before it.
+            # Do not strip unrelated leading/trailing whitespace or newlines.
+            space = " ".encode("utf-16-le")
+            if suffix.startswith(space) and (not prefix or prefix.endswith(space)):
+                suffix = suffix[len(space):]
+            encoded = prefix + suffix
+            continue
         # Use the mention's number or UUID as the replacement
         identifier = mention.get("number") or mention.get("uuid") or "user"
         replacement = f"@{identifier}"
-        text = text[:start] + replacement + text[start + length:]
-    return text
+        encoded = prefix + replacement.encode("utf-16-le") + suffix
+    return encoded.decode("utf-16-le")
 
 
 def _is_signal_service_id(value: str) -> bool:
@@ -297,6 +330,7 @@ class SignalAdapter(BasePlatformAdapter):
         # RPC during a cooldown window instead.
         self._typing_failures: Dict[str, int] = {}
         self._typing_skip_until: Dict[str, float] = {}
+        self._typing_active_chats: set[str] = set()
         self._running = False
         self._last_sse_activity = 0.0
         self._sse_response: Optional[httpx.Response] = None
@@ -328,6 +362,7 @@ class SignalAdapter(BasePlatformAdapter):
         # phone number to the corresponding UUID when signal-cli prefers it.
         self._recipient_uuid_by_number: Dict[str, str] = {}
         self._recipient_number_by_uuid: Dict[str, str] = {}
+        self._self_service_ids: set[str] = set()
         self._recipient_cache_lock = asyncio.Lock()
 
         logger.info("Signal adapter initialized: url=%s account=%s groups=%s",
@@ -366,6 +401,20 @@ class SignalAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.error("Signal: cannot reach signal-cli at %s: %s", self.http_url, e)
                 return False
+
+            # Best-effort identity discovery lets UUID-only group mentions of
+            # this account be recognized without guessing that an arbitrary
+            # service ID belongs to the bot. Older signal-cli versions may not
+            # expose getUserStatus over JSON-RPC, so failure is non-fatal.
+            account_result = await self._rpc(
+                "getUserStatus", {
+                    "account": self.account,
+                    "recipient": [self.account],
+                },
+                rpc_id="account-identifiers",
+                log_failures=False, timeout=2.0,
+            )
+            self._remember_account_identifiers(account_result)
 
             self._running = True
             self._last_sse_activity = time.time()
@@ -607,23 +656,32 @@ class SignalAdapter(BasePlatformAdapter):
         chat_id = sender if not is_group else f"group:{group_id}"
         chat_type = "group" if is_group else "dm"
 
-        # Extract text and render mentions
+        # Extract text and render mentions. Learn the bot's service ID from
+        # authoritative metadata when Signal supplies number + UUID together,
+        # then remove only the exact mention spans that refer to this account.
         text = data_message.get("message", "")
         mentions = data_message.get("mentions", [])
+        for mention in mentions:
+            if mention.get("number") == self._account_normalized:
+                self._remember_account_identifiers(mention)
+        self_identifiers = {self._account_normalized, *self._self_service_ids}
+        self_identifiers.discard("")
+        self_mentions = [
+            mention for mention in mentions
+            if {mention.get("number"), mention.get("uuid")} & self_identifiers
+        ]
         if text and mentions:
-            text = _render_mentions(text, mentions)
+            text = _render_mentions(
+                text, mentions,
+                excluded_identifiers=self_identifiers if is_group else None,
+            )
 
         # Mention filter: in groups, only process messages that @mention the bot account
         if is_group and self.require_mention:
-            account_norm = self._account_normalized
-            # Check rendered mention tags OR raw mention metadata
-            mentioned_in_text = account_norm and (
-                f"@{account_norm}" in (text or "")
+            mentioned_in_text = any(
+                f"@{identifier}" in (text or "") for identifier in self_identifiers
             )
-            mentioned_in_metadata = any(
-                m.get("number") == account_norm or m.get("uuid") == account_norm
-                for m in (data_message.get("mentions") or [])
-            )
+            mentioned_in_metadata = bool(self_mentions)
             if not mentioned_in_text and not mentioned_in_metadata:
                 logger.debug(
                     "Signal: ignoring group message (require_mention=true, bot not mentioned)"
@@ -637,19 +695,8 @@ class SignalAdapter(BasePlatformAdapter):
         # addressee to the LLM rather than a self-reference. Applies to every
         # group (not just require_mention groups) so the self-mention is
         # cleaned wherever it appears.
-        if is_group and text:
-            account_norm = self._account_normalized
-            if account_norm:
-                text = text.replace(f"@{account_norm}", "")
-                # Also strip if the mention was rendered using the bot's UUID
-                bot_uuid = self._recipient_uuid_by_number.get(account_norm)
-                if bot_uuid:
-                    text = text.replace(f"@{bot_uuid}", "")
-                # Tidy the spacing the removed mention left behind: collapse the
-                # double-space at a mid-sentence removal and trim the ends.
-                # Only touches the doubled space the removal introduced, so
-                # intentional newlines in a multi-line message are preserved.
-                text = text.replace("  ", " ").strip()
+        # Self-mention spans were removed during rendering above. No global
+        # strip/collapse is applied: unrelated user whitespace is preserved.
 
         # Extract quote (reply-to) context from Signal dataMessage. Signal's
         # quote.id is the timestamp of the quoted message; quote.author points
@@ -768,6 +815,31 @@ class SignalAdapter(BasePlatformAdapter):
             return
         self._recipient_uuid_by_number[number] = service_id
         self._recipient_number_by_uuid[service_id] = number
+
+    def _remember_account_identifiers(self, result: Any) -> None:
+        """Learn this account's service IDs from listAccounts/mention metadata."""
+        if not result:
+            return
+        if isinstance(result, list):
+            entries = result
+        elif isinstance(result, dict) and isinstance(result.get("accounts"), list):
+            entries = result["accounts"]
+        elif isinstance(result, dict):
+            entries = [result]
+        else:
+            return
+
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            number = entry.get("number") or entry.get("account")
+            if number != self._account_normalized:
+                continue
+            for key in ("uuid", "aci", "serviceId", "service_id"):
+                service_id = entry.get(key)
+                if isinstance(service_id, str) and _is_signal_service_id(service_id):
+                    self._self_service_ids.add(service_id)
+                    self._remember_recipient_identifiers(number, service_id)
 
     @staticmethod
     def _extract_quote_author(quote_data: Any) -> Optional[str]:
@@ -1164,6 +1236,7 @@ class SignalAdapter(BasePlatformAdapter):
                 backoff = min(60.0, 16.0 * (2 ** (fails - 3)))
                 self._typing_skip_until[chat_id] = now + backoff
         else:
+            self._typing_active_chats.add(chat_id)
             self._typing_failures.pop(chat_id, None)
             self._typing_skip_until.pop(chat_id, None)
 
@@ -1519,19 +1592,26 @@ class SignalAdapter(BasePlatformAdapter):
         # indicator immediately instead of waiting for Signal's ~5s built-in
         # timeout.  Failures are best-effort — the backoff state must still be
         # cleared so the next agent turn starts clean.
+        was_active = chat_id in self._typing_active_chats
+        self._typing_active_chats.discard(chat_id)
         try:
-            params: Dict[str, Any] = {"account": self.account}
-            if chat_id.startswith("group:"):
-                params["groupId"] = chat_id[6:]
-            else:
-                params["recipient"] = [await self._resolve_recipient(chat_id)]
-            params["stop"] = True
-            await self._rpc(
-                "sendTyping",
-                params,
-                rpc_id="typing-stop",
-                log_failures=False,
-            )
+            if was_active:
+                params: Dict[str, Any] = {"account": self.account}
+                if chat_id.startswith("group:"):
+                    params["groupId"] = chat_id[6:]
+                else:
+                    recipient = await asyncio.wait_for(
+                        self._resolve_recipient(chat_id), timeout=1.5,
+                    )
+                    params["recipient"] = [recipient]
+                params["stop"] = True
+                await self._rpc(
+                    "sendTyping",
+                    params,
+                    rpc_id="typing-stop",
+                    log_failures=False,
+                    timeout=1.5,
+                )
         except Exception:
             # Best-effort: any RPC failure (or recipient-resolution failure)
             # must not prevent backoff cleanup.
