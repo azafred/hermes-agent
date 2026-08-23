@@ -1219,6 +1219,14 @@ class SignalAdapter(BasePlatformAdapter):
             params["recipient"] = [await self._resolve_recipient(chat_id)]
 
         fails = self._typing_failures.get(chat_id, 0)
+        # Mark the request before awaiting its response. The base refresh loop
+        # bounds this coroutine and may cancel it after signal-cli has already
+        # accepted the RPC; cleanup must still send an explicit stop when the
+        # final outcome is unknown. A definite failure response clears only a
+        # marker introduced by this attempt; it must not erase stop eligibility
+        # from an earlier successful refresh.
+        was_active = chat_id in self._typing_active_chats
+        self._typing_active_chats.add(chat_id)
         result = await self._rpc(
             "sendTyping",
             params,
@@ -1227,6 +1235,8 @@ class SignalAdapter(BasePlatformAdapter):
         )
 
         if result is None:
+            if not was_active:
+                self._typing_active_chats.discard(chat_id)
             fails += 1
             self._typing_failures[chat_id] = fails
             # After 3 consecutive failures, back off exponentially (16s,

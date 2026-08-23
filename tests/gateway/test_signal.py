@@ -1531,6 +1531,56 @@ class TestSignalStopTypingExplicitRPC:
         assert len(stop_calls) == 1
 
     @pytest.mark.asyncio
+    async def test_cancelled_in_flight_typing_still_sends_stop(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._resolve_recipient = AsyncMock(return_value="uuid-recipient")
+        request_started = asyncio.Event()
+        release_request = asyncio.Event()
+        captured = []
+        chat_id = "recipient"
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params)})
+            if not params.get("stop"):
+                request_started.set()
+                await release_request.wait()
+            return {}
+
+        adapter._rpc = mock_rpc
+        send_task = asyncio.create_task(adapter.send_typing(chat_id))
+        await request_started.wait()
+        send_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await send_task
+
+        await adapter._stop_typing_indicator(chat_id)
+
+        stop_calls = [call for call in captured if call["params"].get("stop") is True]
+        assert len(stop_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_failed_refresh_preserves_prior_stop_eligibility(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._resolve_recipient = AsyncMock(return_value="uuid-recipient")
+        typing_results = iter(({}, None))
+        captured = []
+        chat_id = "recipient"
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params)})
+            if params.get("stop"):
+                return {}
+            return next(typing_results)
+
+        adapter._rpc = mock_rpc
+        await adapter.send_typing(chat_id)
+        await adapter.send_typing(chat_id)
+        await adapter._stop_typing_indicator(chat_id)
+
+        stop_calls = [call for call in captured if call["params"].get("stop") is True]
+        assert len(stop_calls) == 1
+
+    @pytest.mark.asyncio
     async def test_stop_typing_resolution_and_rpc_use_short_timeouts(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
         adapter._resolve_recipient = AsyncMock(return_value="uuid-recipient")
