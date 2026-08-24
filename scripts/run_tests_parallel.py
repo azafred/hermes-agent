@@ -128,12 +128,23 @@ def _count_tests(
 
     counts: dict[Path, int] = {}
     for line in result.stdout.splitlines():
-        # Lines look like: tests/acp/test_auth.py::TestClass::test_name
-        if "::" not in line:
+        # Normal ``-q`` collection emits one node id per line:
+        # tests/acp/test_auth.py::TestClass::test_name
+        if "::" in line:
+            file_part = line.split("::", 1)[0]
+            key_path = Path(file_part)
+            key = key_path if key_path.is_absolute() else repo_root / key_path
+            counts[key] = counts.get(key, 0) + 1
             continue
-        file_part = line.split("::", 1)[0]
-        key = repo_root / file_part
-        counts[key] = counts.get(key, 0) + 1
+
+        # A caller-supplied ``-q`` combines with our own and makes pytest
+        # emit its extra-quiet per-file summary instead: ``path.py: 12``.
+        # Parse that format too so valid runs do not report 0 tests / 0%.
+        file_part, separator, count_text = line.rpartition(": ")
+        if separator and file_part.endswith(".py") and count_text.isdigit():
+            key_path = Path(file_part)
+            key = key_path if key_path.is_absolute() else repo_root / key_path
+            counts[key] = int(count_text)
 
     return counts
 

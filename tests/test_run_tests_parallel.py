@@ -30,6 +30,8 @@ from pathlib import Path
 
 import pytest
 
+from scripts import run_tests_parallel
+
 
 # Both tests share the same handoff file: the leaker writes here, the
 # verifier reads here. We park it in $TMPDIR with a unique-per-run name
@@ -185,3 +187,24 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
             f"diag={diag!r} test_pid={test_pid} test_pgid={test_pgid}; "
             f"runner output:\n{proc.stdout}"
         )
+
+
+def test_count_tests_accepts_extra_quiet_collection_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A caller-supplied ``-q`` must not collapse progress totals to zero."""
+    test_file = tmp_path / "tests" / "test_example.py"
+    test_file.parent.mkdir()
+    test_file.write_text("def test_example(): pass\n")
+
+    completed = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout="tests/test_example.py: 3\n",
+        stderr="",
+    )
+    monkeypatch.setattr(run_tests_parallel.subprocess, "run", lambda *a, **k: completed)
+
+    assert run_tests_parallel._count_tests([test_file], tmp_path, ["-q"]) == {
+        test_file: 3
+    }
