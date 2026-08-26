@@ -118,6 +118,10 @@ class TestGmiModelCatalog:
             },
         )
         monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda api_key, base_url: None)
+        # provider_model_ids() has a second, profile-based live-discovery path.
+        # Disable it too so this test deterministically exercises the static
+        # fallback instead of contacting GMI's real endpoint.
+        monkeypatch.setattr("providers.get_provider_profile", lambda provider_id: None)
 
         assert provider_model_ids("gmi") == list(_PROVIDER_MODELS["gmi"])
 
