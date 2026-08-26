@@ -208,3 +208,48 @@ def test_count_tests_accepts_extra_quiet_collection_summary(
     assert run_tests_parallel._count_tests([test_file], tmp_path, ["-q"]) == {
         test_file: 3
     }
+
+
+def test_parse_test_target_splits_pytest_node_selector() -> None:
+    """A documented pytest node ID must resolve to its existing test file."""
+    parse_target = getattr(run_tests_parallel, "_parse_test_target")
+
+    assert parse_target("tests/test_example.py::TestExample::test_one") == (
+        Path("tests/test_example.py"),
+        "tests/test_example.py::TestExample::test_one",
+    )
+    assert parse_target("tests/test_example.py") == (
+        Path("tests/test_example.py"),
+        None,
+    )
+
+
+def test_targets_for_file_keeps_selectors_scoped_to_their_file(tmp_path: Path) -> None:
+    """Selectors stay local, while an explicit whole-file request wins."""
+    targets_for_file = getattr(run_tests_parallel, "_targets_for_file")
+    first = tmp_path / "tests" / "test_first.py"
+    second = tmp_path / "tests" / "test_second.py"
+    selectors = {
+        first.resolve(): [
+            "tests/test_first.py::test_one",
+            "tests/test_first.py::test_two",
+        ]
+    }
+
+    assert targets_for_file(first, selectors, set()) == selectors[first.resolve()]
+    assert targets_for_file(second, selectors, set()) == [str(second)]
+    assert targets_for_file(first, selectors, {first.resolve()}) == [str(first)]
+
+
+def test_whole_file_requests_include_files_covered_by_directory(tmp_path: Path) -> None:
+    """A directory plus a narrower selector must retain directory coverage."""
+    whole_file_requests = getattr(run_tests_parallel, "_whole_file_requests")
+    tests_dir = tmp_path / "tests"
+    first = tests_dir / "test_first.py"
+    second = tests_dir / "nested" / "test_second.py"
+    outside = tmp_path / "other" / "test_outside.py"
+
+    assert whole_file_requests(
+        [first, second, outside],
+        [tests_dir],
+    ) == {first.resolve(), second.resolve()}
