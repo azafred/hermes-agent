@@ -23,7 +23,7 @@ Why drop xdist entirely?
     the job.
 
 Usage:
-    python scripts/run_tests_parallel.py [pytest_args...]
+    python scripts/run_tests_parallel.py [test paths or node IDs] [-- pytest_args...]
 
     Common pytest args pass through (e.g. ``-v``, ``-x``, ``--tb=long``,
     ``-k 'pattern'``, ``--lf``).
@@ -81,7 +81,11 @@ _DURATIONS_FILE = "test_durations.json"
 
 
 def _count_tests(
-    files: List[Path], repo_root: Path, pytest_passthrough: List[str]
+    files: List[Path],
+    repo_root: Path,
+    pytest_passthrough: List[str],
+    node_selectors: dict[Path, List[str]] | None = None,
+    whole_file_requests: set[Path] | None = None,
 ) -> dict[Path, int]:
     """Run ``pytest --co -q`` once to count individual tests per file.
 
@@ -112,7 +116,13 @@ def _count_tests(
         sys.executable, "-m", "pytest",
         "--co", "-q",
         *ignore_args,
-        *[str(f) for f in files],
+        *[
+            target
+            for file in files
+            for target in _targets_for_file(
+                file, node_selectors or {}, whole_file_requests or set()
+            )
+        ],
         *pytest_passthrough,
     ]
     try:
@@ -196,6 +206,43 @@ def _discover_files(roots: List[Path]) -> List[Path]:
     return sorted(out)
 
 
+def _parse_test_target(raw: str) -> tuple[Path, str | None]:
+    """Return the filesystem path and optional exact pytest node selector.
+
+    Discovery operates on files, while pytest accepts richer node IDs such as
+    ``tests/test_example.py::TestExample::test_one``. Keep the caller's node
+    ID byte-for-byte for pytest, but strip its suffix for filesystem discovery.
+    """
+    path_text, separator, _node_suffix = raw.partition("::")
+    return Path(path_text), raw if separator else None
+
+
+def _targets_for_file(
+    file: Path,
+    node_selectors: dict[Path, List[str]],
+    whole_file_requests: set[Path],
+) -> List[str]:
+    """Return exact pytest targets scoped to one per-file subprocess."""
+    if file.resolve() in whole_file_requests:
+        return [str(file)]
+    return node_selectors.get(file.resolve(), [str(file)])
+
+
+def _whole_file_requests(files: List[Path], whole_roots: List[Path]) -> set[Path]:
+    """Return discovered files covered by an explicit non-selector root.
+
+    Positional arguments are a union. If a caller names a directory or whole
+    file as well as a narrower node selector inside it, the broader request
+    wins so adding a selector cannot silently reduce existing coverage.
+    """
+    resolved_roots = [root.resolve() for root in whole_roots]
+    return {
+        file.resolve()
+        for file in files
+        if any(file.resolve().is_relative_to(root) for root in resolved_roots)
+    }
+
+
 def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
     """Kill the pytest subprocess and every descendant it spawned.
 
@@ -256,6 +303,7 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
 
 def _run_one_file(
     file: Path,
+    pytest_targets: List[str],
     pytest_args: List[str],
     repo_root: Path,
     file_timeout: float,
@@ -285,7 +333,7 @@ def _run_one_file(
     orphan onto PID 1. This outer timeout exists only to
     bound a pathologically slow or hung file as a whole.
     """
-    cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
+    cmd = [sys.executable, "-m", "pytest", *pytest_targets, *pytest_args]
     
     subproc_start = time.monotonic()
     # launch the pytest process
@@ -654,7 +702,8 @@ def main() -> int:
         nargs="*",
         metavar="PATH",
         help=(
-            "Restrict discovery to these paths (directories or .py files). "
+            "Restrict discovery to these paths (directories, .py files, or "
+            "exact pytest node IDs). "
             "Mutually exclusive with --paths. Anything after a literal '--' "
             "separator is passed through to each per-file pytest invocation."
         ),
@@ -689,13 +738,24 @@ def main() -> int:
 
     # Resolve discovery roots: positional path args override --paths if any
     # were supplied, otherwise --paths (which itself defaults to 'tests').
+    node_selectors: dict[Path, List[str]] = {}
+    whole_roots: List[Path] = []
     if args.paths_positional:
         # Positionals can be directories OR explicit .py files. Either is
         # fine — _discover_files handles both via rglob('test_*.py') for
         # dirs and direct inclusion for files.
-        roots = [repo_root / p for p in args.paths_positional]
+        roots = []
+        for raw_target in args.paths_positional:
+            path, selector = _parse_test_target(raw_target)
+            root = repo_root / path
+            roots.append(root)
+            if selector is not None:
+                node_selectors.setdefault(root.resolve(), []).append(selector)
+            else:
+                whole_roots.append(root)
     else:
         roots = [repo_root / p for p in args.paths.split(":") if p]
+        whole_roots = list(roots)
 
     if args.include_integration:
         # Caller takes responsibility — typically used via explicit -k filter.
@@ -708,7 +768,14 @@ def main() -> int:
         return 1
 
     # Count individual tests per file via a single pytest --co pass.
-    test_counts = _count_tests(files, repo_root, pytest_passthrough)
+    whole_files = _whole_file_requests(files, whole_roots)
+    test_counts = _count_tests(
+        files,
+        repo_root,
+        pytest_passthrough,
+        node_selectors=node_selectors,
+        whole_file_requests=whole_files,
+    )
     total_tests = sum(test_counts.values())
 
     # Apply slicing if requested — distribute files across CI jobs by
@@ -787,7 +854,12 @@ def main() -> int:
         for file in files:
             t0 = time.monotonic()
             fut = pool.submit(
-                _run_one_file, file, pytest_passthrough, repo_root, args.file_timeout
+                _run_one_file,
+                file,
+                _targets_for_file(file, node_selectors, whole_files),
+                pytest_passthrough,
+                repo_root,
+                args.file_timeout,
             )
             fut.add_done_callback(lambda f, file=file, t0=t0: _on_done(file, t0, f))
             futures.append(fut)

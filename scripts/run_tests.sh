@@ -19,6 +19,7 @@
 #   scripts/run_tests.sh tests/agent/               # discover only here
 #   scripts/run_tests.sh tests/agent/ tests/acp/    # multiple roots
 #   scripts/run_tests.sh tests/foo.py               # single file
+#   scripts/run_tests.sh tests/foo.py::test_name    # exact pytest node ID
 #   scripts/run_tests.sh tests/foo.py -- --tb=long  # path + pytest args
 #   scripts/run_tests.sh -- -v --tb=long            # pytest args only
 #
