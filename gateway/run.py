@@ -5564,6 +5564,7 @@ class TurnRunner:
             user_id=getattr(ctx.source, "user_id", None),
             user_id_alt=getattr(ctx.source, "user_id_alt", None),
             skip_context_files=skip_context_files,
+            cwd=str(__import__("agent.runtime_cwd", fromlist=["resolve_agent_cwd"]).resolve_agent_cwd()),
         )
         agent = None
         reused_cached_agent = False
@@ -25150,6 +25151,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
             cron_session="",
+            cwd=context.cwd,
         )
 
     def _clear_session_env(self, tokens: list) -> None:
@@ -26887,6 +26889,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         user_id: str | None = None,
         user_id_alt: str | None = None,
         skip_context_files: bool = False,
+        cwd: str = "",
     ) -> str:
         """Compute a stable string key from agent config values.
 
@@ -26945,6 +26948,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # (context files in vs out) — a toggled config edit must
                 # rebuild the cached agent, not silently reuse it.
                 bool(skip_context_files),
+                # The working directory controls project instruction discovery
+                # and every file/terminal tool. Rebuild only this session's
+                # cached agent when an explicit project binding changes.
+                str(cwd or ""),
             ],
             sort_keys=True,
             default=str,

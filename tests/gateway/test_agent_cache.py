@@ -70,6 +70,18 @@ class TestAgentConfigSignature:
         assert sig1 != sig2
 
 
+    def test_project_cwd_change_different_signature(self):
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "key", "base_url": "", "provider": "openrouter"}
+        sig_a = GatewayRunner._agent_config_signature(
+            "gpt-5", runtime, ["terminal"], "", cwd="/projects/a"
+        )
+        sig_b = GatewayRunner._agent_config_signature(
+            "gpt-5", runtime, ["terminal"], "", cwd="/projects/b"
+        )
+        assert sig_a != sig_b
+
     # ---------------------------------------------------------------
     # cache_keys (compression/context config cache-busting)
     # ---------------------------------------------------------------

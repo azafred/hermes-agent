@@ -3,9 +3,14 @@ import os
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner
-from gateway.session import SessionContext, SessionSource
+from gateway.session import (
+    SessionContext,
+    SessionEntry,
+    SessionSource,
+    build_session_context,
+)
 from gateway.session_context import (
     get_session_env,
     set_session_vars,
@@ -74,6 +79,71 @@ def test_set_session_env_sets_contextvars(monkeypatch):
 
     # Clean up
     runner._clear_session_env(tokens)
+
+
+def test_project_cwd_is_pinned_for_the_session_tools(monkeypatch, tmp_path):
+    """A project-bound gateway session must override the process gateway cwd."""
+    from agent.runtime_cwd import resolve_agent_cwd
+
+    gateway_cwd = tmp_path / "gateway-default"
+    project_cwd = tmp_path / "vault-migrator"
+    gateway_cwd.mkdir()
+    project_cwd.mkdir()
+    monkeypatch.setenv("TERMINAL_CWD", str(gateway_cwd))
+
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="thread-1",
+        chat_type="thread",
+        user_id="fred",
+        thread_id="thread-1",
+    )
+    context = SessionContext(
+        source=source,
+        connected_platforms=[],
+        home_channels={},
+        cwd=str(project_cwd),
+    )
+
+    tokens = runner._set_session_env(context)
+    try:
+        assert resolve_agent_cwd() == project_cwd
+    finally:
+        runner._clear_session_env(tokens)
+
+
+def test_build_session_context_projects_durable_project_binding(tmp_path):
+    from datetime import datetime
+
+    project_cwd = tmp_path / "vault-migrator"
+    project_cwd.mkdir()
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="thread-1",
+        chat_type="thread",
+        user_id="fred",
+        thread_id="thread-1",
+    )
+    now = datetime.now()
+    entry = SessionEntry(
+        session_key="agent:main:discord:thread:thread-1",
+        session_id="session-1",
+        created_at=now,
+        updated_at=now,
+        metadata={
+            "project_binding": {
+                "id": "p_1234",
+                "slug": "vault-migrator",
+                "name": "Vault Migrator",
+                "cwd": str(project_cwd),
+            }
+        },
+    )
+
+    context = build_session_context(source, GatewayConfig(platforms={}), entry)
+
+    assert context.cwd == str(project_cwd)
 
 
 def test_clear_session_env_restores_previous_state(monkeypatch):

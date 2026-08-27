@@ -333,6 +333,10 @@ class SessionContext:
     session_id: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    # Per-session logical workspace. Empty means use the gateway's configured
+    # terminal.cwd fallback. Project-bound messaging sessions populate this
+    # from SessionEntry.metadata without mutating process-global environment.
+    cwd: str = ""
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -346,6 +350,7 @@ class SessionContext:
             "session_id": self.session_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "cwd": self.cwd,
         }
 
 
@@ -4247,5 +4252,8 @@ def build_session_context(
         context.session_id = session_entry.session_id
         context.created_at = session_entry.created_at
         context.updated_at = session_entry.updated_at
+        binding = session_entry.metadata.get("project_binding")
+        if isinstance(binding, dict):
+            context.cwd = str(binding.get("cwd") or "").strip()
     
     return context
