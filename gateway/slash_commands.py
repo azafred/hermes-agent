@@ -573,6 +573,12 @@ class GatewaySlashCommandsMixin:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
 
+    async def _handle_project_command(self, event: MessageEvent) -> str:
+        """Bind/list first-class Projects for this one messaging session."""
+        from gateway.project_commands import handle_project_command
+
+        return await handle_project_command(self, event)
+
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model

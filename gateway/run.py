@@ -18180,6 +18180,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
 
+        if canonical == "project":
+            return await self._handle_project_command(event)
+
         if canonical == "suggestions":
             return await self._handle_suggestions_command(event)
 
