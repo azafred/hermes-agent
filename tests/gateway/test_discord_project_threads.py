@@ -95,6 +95,24 @@ def _interaction():
 
 
 @pytest.mark.asyncio
+async def test_native_project_slash_source_preserves_guild_profile_routing(adapter):
+    seen = []
+
+    def _route(source):
+        seen.append(source)
+        return "work"
+
+    adapter.gateway_runner = SimpleNamespace(_profile_name_for_source=_route)
+
+    event = adapter._build_slash_event(_interaction(), "/project list")
+
+    assert event.source.profile == "work"
+    assert event.source.scope_id == "200"
+    assert event.source.guild_id == "200"
+    assert seen[0].scope_id == "200"
+
+
+@pytest.mark.asyncio
 async def test_project_autocomplete_fails_closed_before_catalog_lookup(adapter):
     adapter._evaluate_slash_authorization = MagicMock(
         return_value=(False, "not allowed")

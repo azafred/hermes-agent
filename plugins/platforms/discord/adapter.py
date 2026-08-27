@@ -6454,20 +6454,25 @@ class DiscordAdapter(BasePlatformAdapter):
         # Get channel topic (if available).
         # For forum threads, inherit the parent forum's topic.
         chat_topic = self._get_effective_topic(interaction.channel, is_thread=is_thread)
+        channel_id = str(interaction.channel_id)
+        parent_id = str(
+            getattr(getattr(interaction, "channel", None), "parent_id", "") or ""
+        )
+        scope_id = str(getattr(interaction, "guild_id", "") or "")
 
         source = self.build_source(
-            chat_id=str(interaction.channel_id),
+            chat_id=channel_id,
             chat_name=chat_name,
             chat_type=chat_type,
             user_id=str(interaction.user.id),
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            scope_id=scope_id or None,
+            parent_chat_id=parent_id or None,
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
-        channel_id = str(interaction.channel_id)
-        parent_id = str(getattr(getattr(interaction, "channel", None), "parent_id", "") or "")
         return MessageEvent(
             text=text,
             message_type=msg_type,
