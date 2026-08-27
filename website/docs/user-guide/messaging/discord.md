@@ -641,6 +641,49 @@ Send `/model` with no arguments in a Discord channel to open a dropdown-based mo
 
 The picker times out after 120 seconds. Only authorized users (those in `DISCORD_ALLOWED_USERS`) can interact with it. If you know the model name, type `/model <name>` directly.
 
+## Project-bound threads
+
+Hermes Projects are profile-local, named workspaces with one primary folder and
+optional additional folders. Discord can bind each thread to a different
+Project, even when all of those threads use the same Hermes profile.
+
+Use the native `/project` command:
+
+- **list** — show Projects registered in the profile serving this channel.
+- **status** — show this thread's current Project and workspace.
+- **use** — bind the current thread/session to a Project. The project field
+  autocompletes by name and slug.
+- **clear** — remove the thread binding and return to the gateway's default
+  workspace.
+- **start** — from a server channel, create a new Discord thread and bind it
+  before the first agent turn. `title` and `message` are optional; when
+  `message` is present Hermes starts working after the bind succeeds.
+
+For example, choose **start**, select `vault-migrator`, set the title to
+`Investigate ACL mismatch`, and optionally enter the first request. Hermes
+creates a linked thread, posts the resolved project/workspace card there, and
+then dispatches the request inside that project context.
+
+Bindings are durable gateway-session metadata, not the profile-wide Desktop
+"active project". Switching one Discord thread therefore does not move another
+thread. A changed binding rebuilds that session's cached agent once so its
+primary folder's `AGENTS.md`, `CLAUDE.md`, and other project context files are
+loaded from the correct workspace.
+
+Projects must already exist in the routed profile. Manage them from the CLI:
+
+```bash
+hermes -p work project create \
+  "Vault Migrator" \
+  ~/Projects/experiments/Meraki/vault_migrator \
+  --slug vault-migrator \
+  --primary ~/Projects/experiments/Meraki/vault_migrator
+```
+
+The bot needs Discord's **Create Public Threads**, **Send Messages in Threads**,
+and normal message permissions for **start**. Project binding itself does not
+grant filesystem access beyond the Hermes process's existing permissions.
+
 ## Native Slash Commands for Skills
 
 Hermes automatically registers installed skills as **native Discord Application Commands**. This means skills appear in Discord's autocomplete `/` menu alongside built-in commands.
