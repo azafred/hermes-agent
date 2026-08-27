@@ -257,5 +257,9 @@ def test_project_binding_survives_explicit_and_automatic_session_rotation(tmp_pa
 
         automatic = store.get_or_create_session(source, force_new=True)
         assert automatic.metadata["project_binding"] == binding
+
+        switched = store.switch_session(automatic.session_key, "resumed-session")
+        assert switched is not None
+        assert switched.metadata["project_binding"] == binding
     finally:
         store.close_all_db_handles()

@@ -3611,6 +3611,7 @@ class SessionStore:
                 display_name=old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                metadata=_route_persistent_metadata(old_entry),
             )
 
             self._entries[session_key] = new_entry
