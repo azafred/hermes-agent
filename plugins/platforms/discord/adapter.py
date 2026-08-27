@@ -18,6 +18,7 @@ import logging
 import math
 import os
 import re
+import shlex
 import struct
 import subprocess
 import tempfile
@@ -5902,6 +5903,42 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_status(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/status", "Status sent~")
 
+        @tree.command(name="project", description="List, bind, or start a Hermes Project thread")
+        @discord.app_commands.describe(
+            action="Project action",
+            project="Project name or slug",
+            title="New Discord thread title (start only)",
+            message="Optional first request to Hermes (start only)",
+        )
+        @discord.app_commands.choices(action=[
+            discord.app_commands.Choice(name="status — show this thread's project", value="status"),
+            discord.app_commands.Choice(name="list — show available projects", value="list"),
+            discord.app_commands.Choice(name="use — bind this thread", value="use"),
+            discord.app_commands.Choice(name="clear — remove this thread's binding", value="clear"),
+            discord.app_commands.Choice(name="start — create a bound thread", value="start"),
+        ])
+        @discord.app_commands.autocomplete(project=self._project_autocomplete)
+        async def slash_project(
+            interaction: discord.Interaction,
+            action: str = "status",
+            project: str = "",
+            title: str = "",
+            message: str = "",
+        ):
+            normalized = (action or "status").strip().lower()
+            if normalized == "start":
+                await self._handle_project_start_slash(
+                    interaction,
+                    project=project,
+                    title=title,
+                    message=message,
+                )
+                return
+            command = f"/project {normalized}"
+            if normalized == "use" and project.strip():
+                command += f" {shlex.quote(project.strip())}"
+            await self._run_simple_slash(interaction, command)
+
         @tree.command(name="sethome", description="Set this chat as the home channel")
         async def slash_sethome(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/sethome")
@@ -6437,6 +6474,148 @@ class DiscordAdapter(BasePlatformAdapter):
     # Thread creation helpers
     # ------------------------------------------------------------------
 
+    async def _project_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[Any]:
+        """Return up to Discord's 25 project choices from the routed profile."""
+        runner = getattr(self, "gateway_runner", None)
+        if runner is None:
+            return []
+        try:
+            event = self._build_slash_event(interaction, "/project list")
+            profile_home = runner._resolve_profile_home_for_source(event.source)
+
+            def _load():
+                from hermes_cli import projects_db as _pdb
+                from pathlib import Path
+
+                with _pdb.connect_closing(Path(profile_home) / "projects.db") as conn:
+                    return _pdb.list_projects(conn, include_archived=False)
+
+            projects = await asyncio.to_thread(_load)
+        except Exception:
+            logger.debug("[Discord] project autocomplete failed", exc_info=True)
+            return []
+
+        query = (current or "").strip().casefold()
+        choices = []
+        for project in projects:
+            haystack = f"{project.name} {project.slug}".casefold()
+            if query and query not in haystack:
+                continue
+            label = f"{project.name} — {project.slug}"[:100]
+            choices.append(discord.app_commands.Choice(name=label, value=project.slug))
+            if len(choices) >= _DISCORD_SELECT_MAX_OPTIONS:
+                break
+        return choices
+
+    def _build_thread_session_event(
+        self,
+        interaction: discord.Interaction,
+        thread_id: str,
+        thread_name: str,
+        text: str,
+        *,
+        message_type: MessageType = MessageType.TEXT,
+    ) -> MessageEvent:
+        """Build one profile-routable event for a newly-created Discord thread."""
+        guild_name = ""
+        if hasattr(interaction, "guild") and interaction.guild:
+            guild_name = interaction.guild.name
+        chat_name = f"{guild_name} / {thread_name}" if guild_name else thread_name
+        channel = getattr(interaction, "channel", None)
+        chat_topic = self._get_effective_topic(channel, is_thread=True) if channel else None
+        source = self.build_source(
+            chat_id=thread_id,
+            chat_name=chat_name,
+            chat_type="thread",
+            user_id=str(interaction.user.id),
+            user_name=interaction.user.display_name,
+            thread_id=thread_id,
+            chat_topic=chat_topic,
+        )
+        parent = self._thread_parent_channel(channel)
+        parent_id = str(getattr(parent, "id", "") or "")
+        return MessageEvent(
+            text=text,
+            message_type=message_type,
+            source=source,
+            raw_message=interaction,
+            auto_skill=self._resolve_channel_skills(thread_id, parent_id or None),
+            channel_prompt=self._resolve_channel_prompt(thread_id, parent_id or None),
+        )
+
+    async def _handle_project_start_slash(
+        self,
+        interaction: discord.Interaction,
+        *,
+        project: str,
+        title: str = "",
+        message: str = "",
+    ) -> None:
+        """Create a thread, bind its session, then optionally dispatch a request."""
+        project = (project or "").strip()
+        if not project:
+            await interaction.response.send_message(
+                "Choose a project before starting a thread.", ephemeral=True
+            )
+            return
+        if not await self._check_slash_authorization(interaction, "/project start"):
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        thread_title = (title or "").strip() or f"{project} · new thread"
+        thread_title = thread_title[:100]
+        result = await self._create_thread(
+            interaction,
+            name=thread_title,
+            message="",
+            auto_archive_duration=1440,
+        )
+        if not result.get("success"):
+            await interaction.followup.send(
+                f"Failed to create thread: {result.get('error', 'unknown error')}",
+                ephemeral=True,
+            )
+            return
+
+        thread_id = str(result.get("thread_id") or "")
+        thread_name = str(result.get("thread_name") or thread_title)
+        self._threads.mark(thread_id)
+        bind_event = self._build_thread_session_event(
+            interaction,
+            thread_id,
+            thread_name,
+            f"/project use {shlex.quote(project)}",
+            message_type=MessageType.COMMAND,
+        )
+        if self._message_handler is None:
+            await interaction.followup.send(
+                f"Created <#{thread_id}>, but the gateway command handler is unavailable.",
+                ephemeral=True,
+            )
+            return
+        binding_response = await self._message_handler(bind_event)
+        binding_text = str(binding_response or "")
+        if binding_text:
+            await self.send(thread_id, binding_text, metadata={"thread_id": thread_id})
+        if not binding_text.startswith("✅ **Project bound:**"):
+            await interaction.followup.send(
+                f"Created <#{thread_id}>, but it could not be bound to `{project}`. "
+                "Check the message in the new thread.",
+                ephemeral=True,
+            )
+            return
+
+        starter = (message or "").strip()
+        if starter:
+            await self._dispatch_thread_session(
+                interaction, thread_id, thread_name, starter
+            )
+        await interaction.followup.send(
+            f"Created project-bound thread <#{thread_id}>", ephemeral=True
+        )
+
     async def _handle_thread_create_slash(
         self,
         interaction: discord.Interaction,
@@ -6496,37 +6675,8 @@ class DiscordAdapter(BasePlatformAdapter):
         text: str,
     ) -> None:
         """Build a MessageEvent pointing at a thread and send it through handle_message."""
-        guild_name = ""
-        if hasattr(interaction, "guild") and interaction.guild:
-            guild_name = interaction.guild.name
-
-        chat_name = f"{guild_name} / {thread_name}" if guild_name else thread_name
-
-        # Inherit forum topic when the thread was created inside a forum channel.
-        _chan = getattr(interaction, "channel", None)
-        chat_topic = self._get_effective_topic(_chan, is_thread=True) if _chan else None
-
-        source = self.build_source(
-            chat_id=thread_id,
-            chat_name=chat_name,
-            chat_type="thread",
-            user_id=str(interaction.user.id),
-            user_name=interaction.user.display_name,
-            thread_id=thread_id,
-            chat_topic=chat_topic,
-        )
-
-        _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
-        _parent_id = str(getattr(_parent_channel, "id", "") or "")
-        _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
-        _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)
-        event = MessageEvent(
-            text=text,
-            message_type=MessageType.TEXT,
-            source=source,
-            raw_message=interaction,
-            auto_skill=_skills,
-            channel_prompt=_channel_prompt,
+        event = self._build_thread_session_event(
+            interaction, thread_id, thread_name, text
         )
         await self.handle_message(event)
 

@@ -115,6 +115,60 @@ def adapter():
 
 
 # ------------------------------------------------------------------
+# /project native command registration
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_registers_native_project_slash_command(adapter):
+    adapter._run_simple_slash = AsyncMock()
+    adapter._handle_project_start_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    command = adapter._client.tree.commands["project"]
+    interaction = SimpleNamespace()
+
+    await command(
+        interaction,
+        action="use",
+        project="vault-migrator",
+        title="",
+        message="",
+    )
+
+    adapter._run_simple_slash.assert_awaited_once_with(
+        interaction, "/project use vault-migrator"
+    )
+    adapter._handle_project_start_slash.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_native_project_start_uses_dedicated_thread_handler(adapter):
+    adapter._run_simple_slash = AsyncMock()
+    adapter._handle_project_start_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    command = adapter._client.tree.commands["project"]
+    interaction = SimpleNamespace()
+
+    await command(
+        interaction,
+        action="start",
+        project="vault-migrator",
+        title="ACL investigation",
+        message="Inspect retry behavior",
+    )
+
+    adapter._handle_project_start_slash.assert_awaited_once_with(
+        interaction,
+        project="vault-migrator",
+        title="ACL investigation",
+        message="Inspect retry behavior",
+    )
+    adapter._run_simple_slash.assert_not_awaited()
+
+
+# ------------------------------------------------------------------
 # /thread slash command registration
 # ------------------------------------------------------------------
 

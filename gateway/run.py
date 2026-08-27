@@ -5555,6 +5555,9 @@ class TurnRunner:
         # Check agent cache — reuse the AIAgent from the previous message
         # in this session to preserve the frozen system prompt and tool
         # schemas for prompt cache hits.
+        from agent.runtime_cwd import resolve_agent_cwd
+
+        active_cwd = str(resolve_agent_cwd())
         _sig = self._runner._agent_config_signature(
             turn_route["model"],
             turn_route["runtime"],
@@ -5564,7 +5567,7 @@ class TurnRunner:
             user_id=getattr(ctx.source, "user_id", None),
             user_id_alt=getattr(ctx.source, "user_id_alt", None),
             skip_context_files=skip_context_files,
-            cwd=str(__import__("agent.runtime_cwd", fromlist=["resolve_agent_cwd"]).resolve_agent_cwd()),
+            cwd=active_cwd,
         )
         agent = None
         reused_cached_agent = False
