@@ -84,6 +84,7 @@ def test_set_session_env_sets_contextvars(monkeypatch):
 def test_project_cwd_is_pinned_for_the_session_tools(monkeypatch, tmp_path):
     """A project-bound gateway session must override the process gateway cwd."""
     from agent.runtime_cwd import resolve_agent_cwd
+    from tools.terminal_tool import clear_task_env_overrides, get_session_cwd
 
     gateway_cwd = tmp_path / "gateway-default"
     project_cwd = tmp_path / "vault-migrator"
@@ -103,14 +104,17 @@ def test_project_cwd_is_pinned_for_the_session_tools(monkeypatch, tmp_path):
         source=source,
         connected_platforms=[],
         home_channels={},
+        session_id="rotated-session-id",
         cwd=str(project_cwd),
     )
 
     tokens = runner._set_session_env(context)
     try:
         assert resolve_agent_cwd() == project_cwd
+        assert get_session_cwd("rotated-session-id") == str(project_cwd)
     finally:
         runner._clear_session_env(tokens)
+        clear_task_env_overrides("rotated-session-id")
 
 
 def test_build_session_context_projects_durable_project_binding(tmp_path):

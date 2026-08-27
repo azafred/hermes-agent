@@ -12,10 +12,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from gateway.session import (
+    SessionEntry,
+    SessionSource,
+    SessionStore,
+    build_session_key,
+)
 from hermes_cli import projects_db as pdb
 
 
@@ -231,3 +236,26 @@ def test_project_is_registered_as_a_gateway_command():
     assert command is not None
     assert command.gateway_only is True
     assert set(command.subcommands) >= {"list", "status", "use", "clear", "start"}
+
+
+def test_project_binding_survives_explicit_and_automatic_session_rotation(tmp_path):
+    source = _source("thread-1")
+    store = SessionStore(tmp_path / "sessions", GatewayConfig(platforms={}))
+    try:
+        first = store.get_or_create_session(source)
+        binding = {
+            "id": "p_1234",
+            "slug": "vault-migrator",
+            "name": "Vault Migrator",
+            "cwd": str(tmp_path / "vault"),
+        }
+        assert store.set_session_metadata(first.session_key, "project_binding", binding)
+
+        explicit = store.reset_session(first.session_key)
+        assert explicit is not None
+        assert explicit.metadata["project_binding"] == binding
+
+        automatic = store.get_or_create_session(source, force_new=True)
+        assert automatic.metadata["project_binding"] == binding
+    finally:
+        store.close_all_db_handles()

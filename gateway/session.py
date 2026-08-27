@@ -1011,6 +1011,22 @@ class SessionEntry:
         )
 
 
+# Metadata in this allowlist belongs to the durable routing lane (chat/thread),
+# not one conversation transcript. Preserve it whenever that lane rotates to a
+# fresh session id; other metadata remains conversation-scoped by default.
+_ROUTE_PERSISTENT_METADATA_KEYS = frozenset({"project_binding"})
+
+
+def _route_persistent_metadata(entry: Optional[SessionEntry]) -> Dict[str, Any]:
+    if entry is None:
+        return {}
+    return {
+        key: entry.metadata[key]
+        for key in _ROUTE_PERSISTENT_METADATA_KEYS
+        if key in entry.metadata
+    }
+
+
 def build_channel_continuity_note(
     entry: "SessionEntry",
     source: SessionSource,
@@ -2738,6 +2754,7 @@ class SessionStore:
         db_create_kwargs = None
         existing_session_id = None
         force_new_observed_entry = None
+        route_metadata: Dict[str, Any] = {}
 
         # ---- Phase 0: lock read -- existing session_id for compression tip ----
         if not force_new:
@@ -2761,8 +2778,10 @@ class SessionStore:
             self._ensure_loaded_locked()
             if force_new:
                 force_new_observed_entry = self._entries.get(session_key)
+                route_metadata = _route_persistent_metadata(force_new_observed_entry)
             if session_key in self._entries and not force_new:
                 _entry_for_checks = self._entries[session_key]
+                route_metadata = _route_persistent_metadata(_entry_for_checks)
                 _stale_session_id = _entry_for_checks.session_id
 
         # ---- Phase 1b: no-lock I/O -- stale check + reset policy ----
@@ -2928,6 +2947,7 @@ class SessionStore:
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
                 prev_session_id=prev_session_id,
+                metadata=route_metadata,
             )
             with self._lock:
                 current = self._entries.get(session_key)
@@ -3449,6 +3469,7 @@ class SessionStore:
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
                 is_fresh_reset=True,
+                metadata=_route_persistent_metadata(old_entry),
             )
 
             self._entries[session_key] = new_entry

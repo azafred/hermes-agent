@@ -6484,11 +6484,20 @@ class DiscordAdapter(BasePlatformAdapter):
         self, interaction: discord.Interaction, current: str
     ) -> List[Any]:
         """Return up to Discord's 25 project choices from the routed profile."""
+        try:
+            allowed, _reason = self._evaluate_slash_authorization(interaction)
+        except Exception:
+            return []
+        if not allowed:
+            return []
         runner = getattr(self, "gateway_runner", None)
         if runner is None:
             return []
         try:
             event = self._build_slash_event(interaction, "/project list")
+            access_check = getattr(runner, "_check_slash_access", None)
+            if callable(access_check) and access_check(event.source, "project") is not None:
+                return []
             profile_home = runner._resolve_profile_home_for_source(event.source)
 
             def _load():
@@ -6571,6 +6580,14 @@ class DiscordAdapter(BasePlatformAdapter):
             return
         if not await self._check_slash_authorization(interaction, "/project start"):
             return
+        runner = getattr(self, "gateway_runner", None)
+        access_check = getattr(runner, "_check_slash_access", None) if runner else None
+        if callable(access_check):
+            source = self._build_slash_event(interaction, "/project start").source
+            denial = access_check(source, "project")
+            if denial is not None:
+                await interaction.response.send_message(str(denial), ephemeral=True)
+                return
         await interaction.response.defer(ephemeral=True)
 
         thread_title = (title or "").strip() or f"{project} · new thread"

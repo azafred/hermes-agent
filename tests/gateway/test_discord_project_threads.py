@@ -71,6 +71,7 @@ def adapter():
         user=SimpleNamespace(id=99999, name="HermesBot"),
     )
     instance._check_slash_authorization = AsyncMock(return_value=True)
+    instance._evaluate_slash_authorization = MagicMock(return_value=(True, None))
     instance._threads.mark = lambda _thread_id: None
     return instance
 
@@ -88,9 +89,45 @@ def _interaction():
         guild_id=200,
         guild=channel.guild,
         user=SimpleNamespace(id=42, name="Fred", display_name="Fred"),
-        response=SimpleNamespace(defer=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
         followup=SimpleNamespace(send=AsyncMock()),
     )
+
+
+@pytest.mark.asyncio
+async def test_project_autocomplete_fails_closed_before_catalog_lookup(adapter):
+    adapter._evaluate_slash_authorization = MagicMock(
+        return_value=(False, "not allowed")
+    )
+    adapter.gateway_runner = SimpleNamespace(
+        _resolve_profile_home_for_source=MagicMock(
+            side_effect=AssertionError("unauthorized autocomplete reached project DB")
+        )
+    )
+
+    choices = await adapter._project_autocomplete(_interaction(), "vault")
+
+    assert choices == []
+
+
+@pytest.mark.asyncio
+async def test_project_start_checks_central_slash_access_before_thread_creation(adapter):
+    interaction = _interaction()
+    adapter.gateway_runner = SimpleNamespace(
+        _check_slash_access=lambda _source, _command: "You are not allowed to run `/project`."
+    )
+    adapter._create_thread = AsyncMock()
+
+    await adapter._handle_project_start_slash(
+        interaction,
+        project="vault-migrator",
+        title="Denied",
+        message="Do not run",
+    )
+
+    adapter._create_thread.assert_not_awaited()
+    interaction.response.send_message.assert_awaited_once()
+    assert "not allowed" in interaction.response.send_message.await_args.args[0]
 
 
 @pytest.mark.asyncio

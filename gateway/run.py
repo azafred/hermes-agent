@@ -25140,6 +25140,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _adapters = getattr(self, "adapters", None) or {}
         _adapter = _adapters.get(context.source.platform)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
+        if context.cwd and context.session_id:
+            # Re-register on every project-bound turn so a /new, auto-reset, or
+            # gateway restart that rotates/restores the durable session id still
+            # gives terminal/file/code-exec the same canonical workspace.
+            from tools.terminal_tool import register_task_env_overrides
+
+            register_task_env_overrides(
+                context.session_id,
+                {"cwd": context.cwd},
+            )
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
