@@ -102,7 +102,15 @@ async def test_project_start_binds_before_dispatching_starter(adapter):
     order = []
 
     async def _bind(event):
-        order.append(("bind", event.text, event.source.thread_id))
+        order.append(
+            (
+                "bind",
+                event.text,
+                event.source.thread_id,
+                event.source.parent_chat_id,
+                event.source.scope_id,
+            )
+        )
         return "✅ **Project bound:** Vault Migrator (`vault-migrator`)\n**Workspace:** `/repos/vault`"
 
     async def _starter(_interaction, thread_id, thread_name, text):
@@ -120,7 +128,7 @@ async def test_project_start_binds_before_dispatching_starter(adapter):
     )
 
     assert order == [
-        ("bind", "/project use vault-migrator", "300"),
+        ("bind", "/project use vault-migrator", "300", "100", "200"),
         ("starter", "Inspect retry behavior", "300", "ACL investigation"),
     ]
     adapter.send.assert_awaited_once()

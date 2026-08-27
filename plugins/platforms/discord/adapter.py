@@ -5903,6 +5903,12 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_status(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/status", "Status sent~")
 
+        _project_autocomplete_decorator = getattr(
+            discord.app_commands,
+            "autocomplete",
+            lambda **_kwargs: (lambda fn: fn),
+        )
+
         @tree.command(name="project", description="List, bind, or start a Hermes Project thread")
         @discord.app_commands.describe(
             action="Project action",
@@ -5917,7 +5923,7 @@ class DiscordAdapter(BasePlatformAdapter):
             discord.app_commands.Choice(name="clear — remove this thread's binding", value="clear"),
             discord.app_commands.Choice(name="start — create a bound thread", value="start"),
         ])
-        @discord.app_commands.autocomplete(project=self._project_autocomplete)
+        @_project_autocomplete_decorator(project=self._project_autocomplete)
         async def slash_project(
             interaction: discord.Interaction,
             action: str = "status",
@@ -6525,6 +6531,9 @@ class DiscordAdapter(BasePlatformAdapter):
         chat_name = f"{guild_name} / {thread_name}" if guild_name else thread_name
         channel = getattr(interaction, "channel", None)
         chat_topic = self._get_effective_topic(channel, is_thread=True) if channel else None
+        parent = self._thread_parent_channel(channel)
+        parent_id = str(getattr(parent, "id", "") or "")
+        scope_id = str(getattr(interaction, "guild_id", "") or "")
         source = self.build_source(
             chat_id=thread_id,
             chat_name=chat_name,
@@ -6533,9 +6542,9 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            scope_id=scope_id or None,
+            parent_chat_id=parent_id or None,
         )
-        parent = self._thread_parent_channel(channel)
-        parent_id = str(getattr(parent, "id", "") or "")
         return MessageEvent(
             text=text,
             message_type=message_type,
