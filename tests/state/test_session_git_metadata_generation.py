@@ -126,6 +126,26 @@ def test_cwd_move_clears_metadata_in_same_claim(tmp_path):
         db.close()
 
 
+def test_explicit_empty_cwd_clears_workspace_and_git_metadata(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("session", "discord", cwd="/repo/A")
+        generation = db.update_session_cwd(
+            "session",
+            "",
+            replace_git_meta=True,
+        )
+
+        row = db.get_session("session")
+        assert isinstance(generation, int)
+        assert row is not None
+        assert row["cwd"] == ""
+        assert row["git_branch"] is None
+        assert row["git_repo_root"] is None
+    finally:
+        db.close()
+
+
 def test_explicit_move_replaces_metadata_and_claims_generation(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     try:

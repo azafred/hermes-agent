@@ -131,6 +131,29 @@ async def test_project_use_persists_thread_binding_and_evicts_only_that_agent(tm
 
 
 @pytest.mark.asyncio
+async def test_project_binding_drives_terminal_task_cwd_and_clear(tmp_path):
+    from tools.terminal_tool import clear_task_env_overrides, get_session_cwd
+
+    work_home = tmp_path / "profiles" / "work"
+    work_home.mkdir(parents=True)
+    repo = tmp_path / "repos" / "vault"
+    _create_project(work_home, "Vault Migrator", repo, slug="vault-migrator")
+    runner = _runner({"work": work_home})
+
+    try:
+        await runner._handle_project_command(_event("/project use vault-migrator"))
+        entry = next(iter(runner.session_store.entries.values()))
+
+        assert get_session_cwd(entry.session_id) == str(repo.resolve())
+
+        await runner._handle_project_command(_event("/project clear"))
+        assert get_session_cwd(entry.session_id) is None
+    finally:
+        for entry in runner.session_store.entries.values():
+            clear_task_env_overrides(entry.session_id)
+
+
+@pytest.mark.asyncio
 async def test_project_use_fails_closed_when_primary_folder_disappeared(tmp_path):
     work_home = tmp_path / "profiles" / "work"
     work_home.mkdir(parents=True)

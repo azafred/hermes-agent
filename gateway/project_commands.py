@@ -9,12 +9,50 @@ session-scoped cwd ContextVar.
 from __future__ import annotations
 
 import shlex
+import asyncio
+import logging
 from pathlib import Path
 from typing import Any
 
 from hermes_cli import projects_db as pdb
 
 PROJECT_BINDING_METADATA_KEY = "project_binding"
+logger = logging.getLogger(__name__)
+
+
+async def _project_workspace_to_canonical_stores(runner, entry, cwd: str) -> None:
+    """Project the binding into Hermes' existing tool and SessionDB cwd stores."""
+
+    def _sync() -> None:
+        from tools.terminal_tool import (
+            clear_task_env_overrides,
+            register_task_env_overrides,
+        )
+
+        if cwd:
+            register_task_env_overrides(entry.session_id, {"cwd": cwd})
+        else:
+            clear_task_env_overrides(entry.session_id)
+
+        # SessionEntry metadata remains the routing-index authority for the
+        # gateway command. The canonical state.db cwd projection makes Desktop
+        # grouping and every existing workspace consumer agree with it.
+        try:
+            db = runner.session_store._db
+            if db is not None:
+                db.update_session_cwd(
+                    entry.session_id,
+                    cwd,
+                    replace_git_meta=True,
+                )
+        except Exception:
+            logger.warning(
+                "Could not project project workspace into SessionDB for %s",
+                entry.session_id,
+                exc_info=True,
+            )
+
+    await asyncio.to_thread(_sync)
 
 
 def _primary_path(project) -> str:
@@ -115,6 +153,7 @@ async def handle_project_command(runner, event) -> str:
             entry.session_key, PROJECT_BINDING_METADATA_KEY, None
         ):
             return "Could not persist the project change; this thread was left unchanged."
+        await _project_workspace_to_canonical_stores(runner, entry, "")
         if changed:
             runner._evict_cached_agent(entry.session_key)
         return "Project binding cleared. This thread now uses the gateway's default workspace."
@@ -144,6 +183,7 @@ async def handle_project_command(runner, event) -> str:
         entry.session_key, PROJECT_BINDING_METADATA_KEY, binding
     ):
         return "Could not persist the project change; this thread was left unchanged."
+    await _project_workspace_to_canonical_stores(runner, entry, str(primary))
     if previous != binding:
         runner._evict_cached_agent(entry.session_key)
 

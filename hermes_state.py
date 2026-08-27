@@ -7216,8 +7216,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         A -> B -> A transition or from another process sharing this database.
         Metadata from a different cwd is cleared atomically with the move.
         """
-        if not session_id or not cwd:
+        if not session_id:
             return None
+
+        # Empty is an intentional workspace clear. It is distinct from a
+        # missing session_id and must advance the generation so older async Git
+        # probes cannot republish metadata for the workspace that was removed.
+        cwd = str(cwd or "").strip()
 
         branch = (git_branch or "").strip()
         repo_root = (git_repo_root or "").strip()
