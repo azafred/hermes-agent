@@ -228,6 +228,17 @@ def _targets_for_file(
     return node_selectors.get(file.resolve(), [str(file)])
 
 
+def _duration_sample(
+    file: Path,
+    subprocess_wall: float,
+    whole_file_requests: set[Path],
+) -> Tuple[Path, float] | None:
+    """Return a cache sample only when the subprocess covered the whole file."""
+    if file.resolve() not in whole_file_requests:
+        return None
+    return file, subprocess_wall
+
+
 def _whole_file_requests(files: List[Path], whole_roots: List[Path]) -> set[Path]:
     """Return discovered files covered by an explicit non-selector root.
 
@@ -832,7 +843,9 @@ def main() -> int:
             # Accumulate test-level counts from parsed summary.
             tests_passed += summary.get("passed", 0)
             tests_failed += summary.get("failed", 0)
-            file_times.append((fpath, subproc_wall))
+            duration_sample = _duration_sample(fpath, subproc_wall, whole_files)
+            if duration_sample is not None:
+                file_times.append(duration_sample)
             if rc == 0:
                 pass_count += 1
             else:

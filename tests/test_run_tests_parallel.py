@@ -253,3 +253,15 @@ def test_whole_file_requests_include_files_covered_by_directory(tmp_path: Path) 
         [first, second, outside],
         [tests_dir],
     ) == {first.resolve(), second.resolve()}
+
+
+def test_duration_sample_requires_whole_file_coverage(tmp_path: Path) -> None:
+    """A node-only run must not replace its file's full-suite duration."""
+    duration_sample = getattr(run_tests_parallel, "_duration_sample")
+    test_file = tmp_path / "tests" / "test_example.py"
+
+    assert duration_sample(test_file, 1.25, {test_file.resolve()}) == (
+        test_file,
+        1.25,
+    )
+    assert duration_sample(test_file, 0.05, set()) is None
