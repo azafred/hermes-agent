@@ -232,9 +232,10 @@ def _duration_sample(
     file: Path,
     subprocess_wall: float,
     whole_file_requests: set[Path],
+    pytest_args: List[str],
 ) -> Tuple[Path, float] | None:
-    """Return a cache sample only when the subprocess covered the whole file."""
-    if file.resolve() not in whole_file_requests:
+    """Return a cache sample only for an unfiltered whole-file subprocess."""
+    if pytest_args or file.resolve() not in whole_file_requests:
         return None
     return file, subprocess_wall
 
@@ -843,7 +844,12 @@ def main() -> int:
             # Accumulate test-level counts from parsed summary.
             tests_passed += summary.get("passed", 0)
             tests_failed += summary.get("failed", 0)
-            duration_sample = _duration_sample(fpath, subproc_wall, whole_files)
+            duration_sample = _duration_sample(
+                fpath,
+                subproc_wall,
+                whole_files,
+                pytest_passthrough,
+            )
             if duration_sample is not None:
                 file_times.append(duration_sample)
             if rc == 0:

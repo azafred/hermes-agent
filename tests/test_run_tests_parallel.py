@@ -255,13 +255,37 @@ def test_whole_file_requests_include_files_covered_by_directory(tmp_path: Path) 
     ) == {first.resolve(), second.resolve()}
 
 
-def test_duration_sample_requires_whole_file_coverage(tmp_path: Path) -> None:
-    """A node-only run must not replace its file's full-suite duration."""
+def test_duration_sample_requires_unfiltered_whole_file_coverage(tmp_path: Path) -> None:
+    """Only an unfiltered whole-file run may replace the cached duration."""
     duration_sample = getattr(run_tests_parallel, "_duration_sample")
     test_file = tmp_path / "tests" / "test_example.py"
 
-    assert duration_sample(test_file, 1.25, {test_file.resolve()}) == (
+    assert duration_sample(test_file, 1.25, {test_file.resolve()}, []) == (
         test_file,
         1.25,
     )
-    assert duration_sample(test_file, 0.05, set()) is None
+    assert duration_sample(test_file, 0.05, set(), []) is None
+
+
+@pytest.mark.parametrize(
+    "pytest_args",
+    [
+        ["-k", "one_test"],
+        ["-m", "not integration"],
+        ["--lf"],
+    ],
+)
+def test_duration_sample_rejects_filtered_pytest_runs(
+    tmp_path: Path,
+    pytest_args: list[str],
+) -> None:
+    """Pytest passthrough filters must not poison whole-file cache weights."""
+    duration_sample = getattr(run_tests_parallel, "_duration_sample")
+    test_file = tmp_path / "tests" / "test_example.py"
+
+    assert duration_sample(
+        test_file,
+        0.05,
+        {test_file.resolve()},
+        pytest_args,
+    ) is None
