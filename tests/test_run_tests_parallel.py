@@ -210,6 +210,29 @@ def test_count_tests_accepts_extra_quiet_collection_summary(
     }
 
 
+def test_count_tests_omits_presentation_options_from_collection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verbose execution must not change the machine-readable collection shape."""
+    test_file = tmp_path / "tests" / "test_example.py"
+    test_file.parent.mkdir()
+    test_file.write_text("def test_example(): pass\n")
+    captured: list[str] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured.extend(command)
+        return subprocess.CompletedProcess(command, 0, f"{test_file}: 1\n", "")
+
+    monkeypatch.setattr(run_tests_parallel.subprocess, "run", fake_run)
+
+    assert run_tests_parallel._count_tests(
+        [test_file], tmp_path, ["-v", "--tb", "long"]
+    ) == {test_file: 1}
+    assert "-v" not in captured
+    assert "--tb" not in captured
+    assert "long" not in captured
+
+
 def test_parse_test_target_splits_pytest_node_selector() -> None:
     """A documented pytest node ID must resolve to its existing test file."""
     parse_target = getattr(run_tests_parallel, "_parse_test_target")
@@ -260,11 +283,36 @@ def test_duration_sample_requires_unfiltered_whole_file_coverage(tmp_path: Path)
     duration_sample = getattr(run_tests_parallel, "_duration_sample")
     test_file = tmp_path / "tests" / "test_example.py"
 
-    assert duration_sample(test_file, 1.25, {test_file.resolve()}, []) == (
+    assert duration_sample(
+        test_file, 0, {"passed": 1}, 1.25, {test_file.resolve()}, []
+    ) == (
         test_file,
         1.25,
     )
-    assert duration_sample(test_file, 0.05, set(), []) is None
+    assert duration_sample(
+        test_file, 0, {"passed": 1}, 0.05, set(), []
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "pytest_args", [["-v"], ["-q"], ["--tb=long"], ["--tb", "long"]]
+)
+def test_duration_sample_accepts_presentation_only_pytest_options(
+    tmp_path: Path,
+    pytest_args: list[str],
+) -> None:
+    """Documented output options preserve whole-file duration coverage."""
+    duration_sample = getattr(run_tests_parallel, "_duration_sample")
+    test_file = tmp_path / "tests" / "test_example.py"
+
+    assert duration_sample(
+        test_file,
+        0,
+        {"passed": 1},
+        1.25,
+        {test_file.resolve()},
+        pytest_args,
+    ) == (test_file, 1.25)
 
 
 @pytest.mark.parametrize(
@@ -285,7 +333,43 @@ def test_duration_sample_rejects_filtered_pytest_runs(
 
     assert duration_sample(
         test_file,
+        0,
+        {"passed": 1},
         0.05,
         {test_file.resolve()},
         pytest_args,
+    ) is None
+
+
+@pytest.mark.parametrize("returncode", [1, 2, 3, 4, 5])
+def test_duration_sample_rejects_incomplete_or_failed_runs(
+    tmp_path: Path,
+    returncode: int,
+) -> None:
+    """Only a successful completed run may replace a duration weight."""
+    duration_sample = getattr(run_tests_parallel, "_duration_sample")
+    test_file = tmp_path / "tests" / "test_example.py"
+
+    assert duration_sample(
+        test_file,
+        returncode,
+        {"passed": 1},
+        0.05,
+        {test_file.resolve()},
+        [],
+    ) is None
+
+
+def test_duration_sample_rejects_normalized_no_tests_run(tmp_path: Path) -> None:
+    """A normalized exit-five result still lacks a complete duration sample."""
+    duration_sample = getattr(run_tests_parallel, "_duration_sample")
+    test_file = tmp_path / "tests" / "test_example.py"
+
+    assert duration_sample(
+        test_file,
+        0,
+        {},
+        0.05,
+        {test_file.resolve()},
+        [],
     ) is None
