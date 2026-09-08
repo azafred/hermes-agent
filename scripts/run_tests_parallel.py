@@ -80,6 +80,38 @@ _DEFAULT_FILE_TIMEOUT_SECONDS = 140.0 # set by observing the slowest file at com
 _DURATIONS_FILE = "test_durations.json"
 
 
+def _is_presentation_pytest_arg(arg: str) -> bool:
+    """Return whether one pytest argument only changes rendered output."""
+    if arg in {"--disable-warnings", "--no-header", "--no-summary", "--showlocals"}:
+        return True
+    if arg.startswith(("--tb=", "--color=", "--code-highlight=")):
+        return True
+    return (
+        arg.startswith("-")
+        and not arg.startswith("--")
+        and bool(arg[1:])
+        and set(arg[1:]) <= {"q", "v"}
+    )
+
+
+def _coverage_pytest_args(pytest_args: List[str]) -> List[str]:
+    """Return pytest arguments that may change which tests execute."""
+    coverage_args: List[str] = []
+    index = 0
+    paired_output_flags = {"--tb", "--color", "--code-highlight"}
+    while index < len(pytest_args):
+        arg = pytest_args[index]
+        if arg in paired_output_flags and index + 1 < len(pytest_args):
+            index += 2
+            continue
+        if _is_presentation_pytest_arg(arg):
+            index += 1
+            continue
+        coverage_args.append(arg)
+        index += 1
+    return coverage_args
+
+
 def _count_tests(
     files: List[Path],
     repo_root: Path,
@@ -123,7 +155,7 @@ def _count_tests(
                 file, node_selectors or {}, whole_file_requests or set()
             )
         ],
-        *pytest_passthrough,
+        *_coverage_pytest_args(pytest_passthrough),
     ]
     try:
         result = subprocess.run(
@@ -230,12 +262,23 @@ def _targets_for_file(
 
 def _duration_sample(
     file: Path,
+    returncode: int,
+    summary: dict[str, int],
     subprocess_wall: float,
     whole_file_requests: set[Path],
     pytest_args: List[str],
 ) -> Tuple[Path, float] | None:
-    """Return a cache sample only for an unfiltered whole-file subprocess."""
-    if pytest_args or file.resolve() not in whole_file_requests:
+    """Return a cache sample only for a successful whole-file subprocess."""
+    completed_tests = sum(
+        summary.get(outcome, 0)
+        for outcome in ("passed", "skipped", "xfailed", "xpassed")
+    )
+    if (
+        _coverage_pytest_args(pytest_args)
+        or returncode != 0
+        or completed_tests == 0
+        or file.resolve() not in whole_file_requests
+    ):
         return None
     return file, subprocess_wall
 
@@ -846,6 +889,8 @@ def main() -> int:
             tests_failed += summary.get("failed", 0)
             duration_sample = _duration_sample(
                 fpath,
+                rc,
+                summary,
                 subproc_wall,
                 whole_files,
                 pytest_passthrough,
