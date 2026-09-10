@@ -278,6 +278,31 @@ def test_whole_file_requests_include_files_covered_by_directory(tmp_path: Path) 
     ) == {first.resolve(), second.resolve()}
 
 
+def test_save_durations_distinguishes_local_cache_from_slice_artifact(
+    tmp_path: Path,
+) -> None:
+    """CI slices exclude stale timings while local runs preserve other entries."""
+    fresh_file = tmp_path / "tests" / "test_fresh.py"
+    durations_path = tmp_path / "test_durations.json"
+    durations_path.write_text(json.dumps({"tests/test_stale.py": 99.0}))
+
+    run_tests_parallel._save_durations(
+        [(fresh_file, 1.2345)],
+        tmp_path,
+        merge_existing=False,
+    )
+
+    assert json.loads(durations_path.read_text()) == {"tests/test_fresh.py": 1.234}
+
+    durations_path.write_text(json.dumps({"tests/test_stale.py": 99.0}))
+    run_tests_parallel._save_durations([(fresh_file, 1.2345)], tmp_path)
+
+    assert json.loads(durations_path.read_text()) == {
+        "tests/test_fresh.py": 1.234,
+        "tests/test_stale.py": 99.0,
+    }
+
+
 def test_duration_sample_requires_unfiltered_whole_file_coverage(tmp_path: Path) -> None:
     """Only an unfiltered whole-file run may replace the cached duration."""
     duration_sample = getattr(run_tests_parallel, "_duration_sample")
