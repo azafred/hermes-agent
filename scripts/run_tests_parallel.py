@@ -625,15 +625,18 @@ def _load_durations(repo_root: Path) -> dict[str, float]:
 def _save_durations(
     file_times: List[Tuple[Path, float]],
     repo_root: Path,
+    *,
+    merge_existing: bool = True,
 ) -> None:
-    """Write the duration cache so future ``--slice`` runs can use it.
+    """Write measured durations for future ``--slice`` runs.
 
-    Merges with any existing cache so entries from files not in the
-    current run (e.g. from a different slice) are preserved. Keys are
-    repo-relative paths so the cache is portable across checkouts
-    and CI runners.
+    Local runs merge with the existing cache so entries for files outside the
+    requested paths survive. CI slices set ``merge_existing=False`` so each
+    uploaded artifact contains only that slice's fresh measurements; otherwise
+    the restored full cache in every slice can overwrite another slice's fresh
+    values when the artifacts are merged.
     """
-    data: dict[str, float] = _load_durations(repo_root)
+    data: dict[str, float] = _load_durations(repo_root) if merge_existing else {}
     for f, t in file_times:
         key = _format_file(f, repo_root)
         data[key] = round(t, 3)
@@ -938,12 +941,15 @@ def main() -> int:
     pct = (tests_done / total_tests * 100) if total_tests else 0
     print(f"=== Summary: {len(files)} files, {tests_passed} tests passed, {tests_failed} failed ({pct:.0f}% complete) in {elapsed:.1f}s ({args.jobs} workers) ===")
 
-    # Save durations for future --slice runs. Each slice writes its own
-    # partial test_durations.json; a CI merge step joins them later.
-    # Locally, _save_durations merges with any existing cache so entries
-    # from previous runs aren't lost.
+    # Save durations for future --slice runs. CI slices write only their
+    # fresh measurements so the merge step combines disjoint partial maps;
+    # local unsliced runs preserve entries outside the requested paths.
     if file_times:
-        _save_durations(file_times, repo_root)
+        _save_durations(
+            file_times,
+            repo_root,
+            merge_existing=slice_index is None,
+        )
         print(f"  Durations cached to {_DURATIONS_FILE} ({len(file_times)} files)")
 
     # Per-file time distribution (throwaway diagnostic — shows how
