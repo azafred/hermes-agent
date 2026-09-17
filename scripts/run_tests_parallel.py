@@ -756,6 +756,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--fresh-durations",
+        action="store_true",
+        help=(
+            "Write only durations measured by this invocation. Intended for "
+            "per-slice CI artifacts that are merged after all slices finish."
+        ),
+    )
+    parser.add_argument(
         "paths_positional",
         nargs="*",
         metavar="PATH",
@@ -941,14 +949,17 @@ def main() -> int:
     pct = (tests_done / total_tests * 100) if total_tests else 0
     print(f"=== Summary: {len(files)} files, {tests_passed} tests passed, {tests_failed} failed ({pct:.0f}% complete) in {elapsed:.1f}s ({args.jobs} workers) ===")
 
-    # Save durations for future --slice runs. CI slices write only their
-    # fresh measurements so the merge step combines disjoint partial maps;
-    # local unsliced runs preserve entries outside the requested paths.
-    if file_times:
+    # Save durations for future --slice runs. CI can request an artifact
+    # containing only this invocation's fresh measurements so the merge step
+    # combines disjoint partial maps. Unsliced local runs preserve entries
+    # outside the requested files. Local slices leave the shared cache alone
+    # so sequential slices all use the same partition snapshot.
+    should_save_durations = slice_index is None or args.fresh_durations
+    if file_times and should_save_durations:
         _save_durations(
             file_times,
             repo_root,
-            merge_existing=slice_index is None,
+            merge_existing=not args.fresh_durations,
         )
         print(f"  Durations cached to {_DURATIONS_FILE} ({len(file_times)} files)")
 
