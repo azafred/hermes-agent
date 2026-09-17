@@ -951,9 +951,11 @@ def main() -> int:
 
     # Save durations for future --slice runs. CI can request an artifact
     # containing only this invocation's fresh measurements so the merge step
-    # combines disjoint partial maps. Local runs, sliced or unsliced, preserve
-    # entries outside the requested files by default.
-    if file_times:
+    # combines disjoint partial maps. Unsliced local runs preserve entries
+    # outside the requested files. Local slices leave the shared cache alone
+    # so sequential slices all use the same partition snapshot.
+    should_save_durations = slice_index is None or args.fresh_durations
+    if file_times and should_save_durations:
         _save_durations(
             file_times,
             repo_root,

@@ -279,16 +279,16 @@ def test_whole_file_requests_include_files_covered_by_directory(tmp_path: Path) 
 
 
 @pytest.mark.parametrize(
-    ("fresh_args", "expected_merge"),
-    [([], True), (["--fresh-durations"], False)],
+    ("fresh_args", "expected_modes"),
+    [([], []), (["--fresh-durations"], [False])],
 )
 def test_main_slice_duration_cache_mode_is_explicit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     fresh_args: list[str],
-    expected_merge: bool,
+    expected_modes: list[bool],
 ) -> None:
-    """Local slices merge by default; CI can request a fresh artifact."""
+    """Local slices keep one snapshot; CI emits a fresh artifact."""
     test_file = tmp_path / "tests" / "test_example.py"
     test_file.parent.mkdir()
     test_file.write_text("def test_example(): pass\n")
@@ -329,7 +329,7 @@ def test_main_slice_duration_cache_mode_is_explicit(
     monkeypatch.setattr(run_tests_parallel, "_print_progress", lambda *_args, **_kwargs: None)
 
     assert run_tests_parallel.main() == 0
-    assert saved_modes == [expected_merge]
+    assert saved_modes == expected_modes
 
 
 def test_save_durations_distinguishes_local_cache_from_slice_artifact(
