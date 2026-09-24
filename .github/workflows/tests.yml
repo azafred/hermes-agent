@@ -41,7 +41,9 @@ jobs:
           # If you provide restore-keys, the cache action sequentially searches for any caches that match the list of restore-keys.
           # If there are no exact matches, the action searches for partial matches of the restore keys.
           # When the action finds a partial match, the most recent cache is restored to the path directory.
-          key: test-durations
+          key: test-durations-${{ github.run_id }}
+          restore-keys: |
+            test-durations-
 
       - name: Install ripgrep (prebuilt binary)
         run: |
