@@ -1507,6 +1507,31 @@ class TestSignalStopTypingExplicitRPC:
         assert "+155****0000" not in adapter._typing_failures
         assert "+155****0000" not in adapter._typing_skip_until
 
+    @pytest.mark.asyncio
+    async def test_stop_typing_indicator_retries_after_transient_failure(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        chat_id = "+155****0000"
+        adapter._resolve_recipient = AsyncMock(
+            side_effect=[RuntimeError("transient resolution failure"), "uuid-recipient"]
+        )
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params)})
+            return {}
+
+        adapter._rpc = mock_rpc
+        adapter._typing_active_chats.add(chat_id)
+
+        await adapter._stop_typing_indicator(chat_id)
+        await adapter._stop_typing_indicator(chat_id)
+
+        assert adapter._resolve_recipient.await_count == 2
+        assert len(captured) == 1
+        assert captured[0]["params"]["stop"] is True
+        assert captured[0]["params"]["recipient"] == ["uuid-recipient"]
+        assert chat_id not in adapter._typing_active_chats
+
 
     @pytest.mark.asyncio
     async def test_stop_typing_indicator_is_idempotent_after_active_typing(self, monkeypatch):
@@ -1677,6 +1702,31 @@ class TestSignalSelfMentionHandling:
         ))
 
         assert captured[0].text == "😀 please\n"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("message", "mentions", "expected"),
+        [
+            ("hello", None, "hello"),
+            ("hello", 7, "hello"),
+            ("\uFFFC hello", [None, {"start": "bad", "length": 1}], "\uFFFC hello"),
+            ("\uFFFC hello", [{"start": 0, "length": 1, "number": []}], "@user hello"),
+        ],
+    )
+    async def test_malformed_mentions_do_not_drop_message(
+        self, monkeypatch, message, mentions, expected
+    ):
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="group123")
+        captured = []
+
+        async def fake_handle(event):
+            captured.append(event)
+
+        adapter.handle_message = fake_handle
+        await adapter._handle_envelope(self._group_envelope(message, mentions))
+
+        assert len(captured) == 1
+        assert captured[0].text == expected
 
 
 # ---------------------------------------------------------------------------
