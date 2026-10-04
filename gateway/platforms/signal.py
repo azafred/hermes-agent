@@ -212,7 +212,11 @@ def _render_mentions(
     # Python string indexes count Unicode code points. Work in UTF-16 bytes so
     # non-BMP characters before a mention do not shift or corrupt the span.
     encoded = text.encode("utf-16-le")
-    sorted_mentions = sorted(mentions, key=lambda m: m.get("start", 0), reverse=True)
+    sorted_mentions = sorted(
+        mentions,
+        key=lambda m: m.get("start", 0) if isinstance(m.get("start", 0), int) else -1,
+        reverse=True,
+    )
     for mention in sorted_mentions:
         start = mention.get("start", 0)
         length = mention.get("length", 1)
@@ -229,8 +233,11 @@ def _render_mentions(
             suffix.decode("utf-16-le")
         except UnicodeDecodeError:
             continue
-        identifiers = {mention.get("number"), mention.get("uuid")}
-        identifiers.discard(None)
+        identifiers = {
+            value
+            for value in (mention.get("number"), mention.get("uuid"))
+            if isinstance(value, str) and value
+        }
         if excluded_identifiers and identifiers & excluded_identifiers:
             # Drop one ordinary separator after the removed mention when it is
             # at the start or already has whitespace immediately before it.
@@ -241,7 +248,14 @@ def _render_mentions(
             encoded = prefix + suffix
             continue
         # Use the mention's number or UUID as the replacement
-        identifier = mention.get("number") or mention.get("uuid") or "user"
+        identifier = next(
+            (
+                value
+                for value in (mention.get("number"), mention.get("uuid"))
+                if isinstance(value, str) and value
+            ),
+            "user",
+        )
         replacement = f"@{identifier}"
         encoded = prefix + replacement.encode("utf-16-le") + suffix
     return encoded.decode("utf-16-le")
@@ -660,7 +674,12 @@ class SignalAdapter(BasePlatformAdapter):
         # authoritative metadata when Signal supplies number + UUID together,
         # then remove only the exact mention spans that refer to this account.
         text = data_message.get("message", "")
-        mentions = data_message.get("mentions", [])
+        raw_mentions = data_message.get("mentions")
+        mentions = [
+            mention
+            for mention in (raw_mentions if isinstance(raw_mentions, list) else [])
+            if isinstance(mention, dict)
+        ]
         for mention in mentions:
             if mention.get("number") == self._account_normalized:
                 self._remember_account_identifiers(mention)
@@ -668,7 +687,11 @@ class SignalAdapter(BasePlatformAdapter):
         self_identifiers.discard("")
         self_mentions = [
             mention for mention in mentions
-            if {mention.get("number"), mention.get("uuid")} & self_identifiers
+            if {
+                value
+                for value in (mention.get("number"), mention.get("uuid"))
+                if isinstance(value, str) and value
+            } & self_identifiers
         ]
         if text and mentions:
             text = _render_mentions(
@@ -1603,7 +1626,7 @@ class SignalAdapter(BasePlatformAdapter):
         # timeout.  Failures are best-effort — the backoff state must still be
         # cleared so the next agent turn starts clean.
         was_active = chat_id in self._typing_active_chats
-        self._typing_active_chats.discard(chat_id)
+        stopped = False
         try:
             if was_active:
                 params: Dict[str, Any] = {"account": self.account}
@@ -1615,17 +1638,21 @@ class SignalAdapter(BasePlatformAdapter):
                     )
                     params["recipient"] = [recipient]
                 params["stop"] = True
-                await self._rpc(
+                result = await self._rpc(
                     "sendTyping",
                     params,
                     rpc_id="typing-stop",
                     log_failures=False,
                     timeout=1.5,
                 )
+                stopped = result is not None
         except Exception:
             # Best-effort: any RPC failure (or recipient-resolution failure)
             # must not prevent backoff cleanup.
             pass
+
+        if stopped:
+            self._typing_active_chats.discard(chat_id)
 
         self._typing_failures.pop(chat_id, None)
         self._typing_skip_until.pop(chat_id, None)
