@@ -1532,6 +1532,28 @@ class TestSignalStopTypingExplicitRPC:
         assert captured[0]["params"]["recipient"] == ["uuid-recipient"]
         assert chat_id not in adapter._typing_active_chats
 
+    @pytest.mark.asyncio
+    async def test_stop_typing_indicator_retries_after_structured_rpc_failure(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        chat_id = "+155****0000"
+        adapter._resolve_recipient = AsyncMock(return_value="uuid-recipient")
+        results = [
+            {"results": [{"type": "NETWORK_FAILURE"}]},
+            {"results": [{"type": "SUCCESS"}]},
+        ]
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            return results.pop(0)
+
+        adapter._rpc = mock_rpc
+        adapter._typing_active_chats.add(chat_id)
+
+        await adapter._stop_typing_indicator(chat_id)
+        assert chat_id in adapter._typing_active_chats
+
+        await adapter._stop_typing_indicator(chat_id)
+        assert chat_id not in adapter._typing_active_chats
+        assert adapter._resolve_recipient.await_count == 2
 
     @pytest.mark.asyncio
     async def test_stop_typing_indicator_is_idempotent_after_active_typing(self, monkeypatch):
