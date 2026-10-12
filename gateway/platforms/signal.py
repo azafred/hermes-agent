@@ -1645,7 +1645,8 @@ class SignalAdapter(BasePlatformAdapter):
                     log_failures=False,
                     timeout=1.5,
                 )
-                stopped = result is not None
+                success, _ = self._validate_send_result(result)
+                stopped = result is not None and success
         except Exception:
             # Best-effort: any RPC failure (or recipient-resolution failure)
             # must not prevent backoff cleanup.
