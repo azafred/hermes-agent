@@ -1256,9 +1256,16 @@ class SignalAdapter(BasePlatformAdapter):
             rpc_id="typing",
             log_failures=(fails == 0),
         )
+        success = result is not None and self._validate_send_result(result)[0]
+        result_entries = result.get("results") if isinstance(result, dict) else None
+        any_recipient_succeeded = isinstance(result_entries, list) and any(
+            isinstance(entry, dict)
+            and (entry.get("type") == "SUCCESS" or entry.get("success") is True)
+            for entry in result_entries
+        )
 
-        if result is None:
-            if not was_active:
+        if not success:
+            if not was_active and not any_recipient_succeeded:
                 self._typing_active_chats.discard(chat_id)
             fails += 1
             self._typing_failures[chat_id] = fails

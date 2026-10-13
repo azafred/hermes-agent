@@ -1319,6 +1319,60 @@ class TestSignalTypingBackoff:
         assert call_count["n"] == 3
 
     @pytest.mark.asyncio
+    async def test_structured_failures_trigger_cooldown(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        chat_id = "+155****4567"
+        call_count = {"n": 0}
+
+        async def _fake_rpc(method, params, rpc_id=None, *, log_failures=True):
+            call_count["n"] += 1
+            return {"results": [{"type": "NETWORK_FAILURE"}]}
+
+        adapter._rpc = _fake_rpc
+
+        for _ in range(3):
+            await adapter.send_typing(chat_id)
+
+        assert call_count["n"] == 3
+        assert adapter._typing_failures.get(chat_id) == 3
+        assert chat_id in adapter._typing_skip_until
+        assert chat_id not in adapter._typing_active_chats
+
+        await adapter.send_typing(chat_id)
+        assert call_count["n"] == 3
+
+    @pytest.mark.asyncio
+    async def test_mixed_structured_result_preserves_stop_eligibility(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        chat_id = "group:group123"
+        captured = []
+        results = [
+            {
+                "results": [
+                    {"type": "SUCCESS"},
+                    {"type": "NETWORK_FAILURE"},
+                ]
+            },
+            {"results": [{"type": "SUCCESS"}]},
+        ]
+
+        async def _fake_rpc(method, params, rpc_id=None, *, log_failures=True, **kwargs):
+            captured.append({"method": method, "params": dict(params)})
+            return results.pop(0)
+
+        adapter._rpc = _fake_rpc
+
+        await adapter.send_typing(chat_id)
+
+        assert adapter._typing_failures.get(chat_id) == 1
+        assert chat_id in adapter._typing_active_chats
+
+        await adapter._stop_typing_indicator(chat_id)
+
+        assert captured[-1]["params"]["stop"] is True
+        assert chat_id not in adapter._typing_active_chats
+
+    @pytest.mark.asyncio
     async def test_cooldown_is_per_chat_not_global(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
         call_log = []
