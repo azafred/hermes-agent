@@ -157,7 +157,7 @@ class TestSignalConnectCleanup:
             adapter._rpc.assert_awaited_once_with(
                 "getUserStatus", {
                     "account": adapter.account,
-                    "recipients": [adapter.account],
+                    "recipient": [adapter.account],
                 },
                 rpc_id="account-identifiers", log_failures=False, timeout=2.0,
             )
