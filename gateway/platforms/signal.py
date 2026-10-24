@@ -423,7 +423,7 @@ class SignalAdapter(BasePlatformAdapter):
             account_result = await self._rpc(
                 "getUserStatus", {
                     "account": self.account,
-                    "recipients": [self.account],
+                    "recipient": [self.account],
                 },
                 rpc_id="account-identifiers",
                 log_failures=False, timeout=2.0,
