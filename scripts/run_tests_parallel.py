@@ -949,6 +949,22 @@ def main() -> int:
     pct = (tests_done / total_tests * 100) if total_tests else 0
     print(f"=== Summary: {len(files)} files, {tests_passed} tests passed, {tests_failed} failed ({pct:.0f}% complete) in {elapsed:.1f}s ({args.jobs} workers) ===")
 
+    # The collection probe strips presentation-only options such as -qq, so
+    # its total remains authoritative even when execution output suppresses
+    # pytest's rendered outcome summary.
+    no_tests_ran_at_all = bool(files) and total_tests == 0
+    if no_tests_ran_at_all:
+        print()
+        print(
+            "=== ✗ NO TESTS RAN — 0 collected across "
+            f"{len(files)} file{'s' if len(files) != 1 else ''}. "
+            "This is NOT a pass. ==="
+        )
+        print(
+            "  Common causes: a -k/-m filter matched nothing, pytest is "
+            "unavailable, or collection failed in every file."
+        )
+
     # Save durations for future --slice runs. CI can request an artifact
     # containing only this invocation's fresh measurements so the merge step
     # combines disjoint partial maps. Unsliced local runs preserve entries
@@ -1017,6 +1033,9 @@ def main() -> int:
             print(f"=== {len(no_tests_ran)} file{'s' if len(no_tests_ran) != 1 else ''} where no tests ran (collection/import error, timeout before collection, etc.) ===")
             for file, s in no_tests_ran:
                 print(f"  {_format_file(file, repo_root)}")
+        return 1
+
+    if no_tests_ran_at_all:
         return 1
 
     return 0
