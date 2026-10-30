@@ -485,6 +485,36 @@ def test_zero_collected_across_run_fails_and_says_so(tmp_path: Path) -> None:
     assert "NOT a pass" in proc.stdout
 
 
+def test_empty_slice_fails_and_says_no_tests_ran(tmp_path: Path) -> None:
+    """A slice assigned no files must not report a successful zero-test run."""
+    test_file = tmp_path / "test_probe.py"
+    test_file.write_text("def test_real():\n    assert True\n")
+    repo_root = Path(__file__).resolve().parent.parent
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "scripts" / "run_tests_parallel.py"),
+            str(test_file),
+            "--slice",
+            "2/2",
+            "-j",
+            "1",
+            "--file-timeout",
+            "30",
+        ],
+        cwd=repo_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=60,
+    )
+
+    assert proc.returncode == 1, proc.stdout
+    assert "NO TESTS RAN" in proc.stdout
+    assert "NOT a pass" in proc.stdout
+
+
 def test_all_skipped_file_does_not_trip_zero_collection_guard(tmp_path: Path) -> None:
     """Collected skip outcomes remain a successful platform-gated run."""
     test_file = tmp_path / "test_all_skipped.py"
