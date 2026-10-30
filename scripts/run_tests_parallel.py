@@ -952,7 +952,7 @@ def main() -> int:
     # The collection probe strips presentation-only options such as -qq, so
     # its total remains authoritative even when execution output suppresses
     # pytest's rendered outcome summary.
-    no_tests_ran_at_all = bool(files) and total_tests == 0
+    no_tests_ran_at_all = total_tests == 0
     if no_tests_ran_at_all:
         print()
         print(
