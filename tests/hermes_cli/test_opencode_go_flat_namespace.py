@@ -143,9 +143,10 @@ def test_deepseek_v4_flash_stays_on_opencode_go():
         f"detect_provider_for_model hijacked the bare name."
     )
     # The provider may canonicalize a retired alias to the current V4 Flash
-    # identifier. This regression guards provider ownership and flat-namespace
-    # shape rather than freezing a model-catalog snapshot.
+    # version, but it must not silently switch to the Pro variant. Guard the
+    # family and variant without freezing a model-catalog version literal.
     assert result.new_model.startswith("deepseek-v4")
+    assert result.new_model.endswith("-flash")
     assert "/" not in result.new_model
 
 
