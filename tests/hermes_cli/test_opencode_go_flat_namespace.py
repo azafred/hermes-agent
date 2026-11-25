@@ -21,7 +21,10 @@ Two bugs this exercises:
    ``vendor/`` prefix because their APIs are flat-namespace.
 """
 
+import re
 from unittest.mock import patch
+
+import pytest
 
 from hermes_cli.model_normalize import normalize_model_for_provider
 from hermes_cli.model_switch import switch_model
@@ -32,7 +35,7 @@ _OPENCODE_GO_LIVE = [
     "minimax-m2.7", "minimax-m2.5",
     "kimi-k2.6", "kimi-k2.5",
     "glm-5.1", "glm-5",
-    "deepseek-v4-pro", "deepseek-v4-flash",
+    "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-20260423",
     "qwen3.6-plus", "qwen3.5-plus",
     "mimo-v2-pro", "mimo-v2-omni", "mimo-v2.5-pro", "mimo-v2.5",
 ]
@@ -133,20 +136,23 @@ def _run_switch(raw_input: str, **extra):
         return switch_model(raw_input=raw_input, **defaults)
 
 
-def test_deepseek_v4_flash_stays_on_opencode_go():
+@pytest.mark.parametrize("model", [
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-20260423",
+])
+def test_deepseek_v4_flash_stays_on_opencode_go(model):
     """Regression: ``/model deepseek-v4-flash`` while on opencode-go must
     NOT switch to native deepseek just because deepseek's static catalog
     also contains that name."""
-    result = _run_switch("deepseek-v4-flash")
+    result = _run_switch(model)
     assert result.target_provider == "opencode-go", (
         f"Expected to stay on opencode-go, got {result.target_provider}. "
         f"detect_provider_for_model hijacked the bare name."
     )
-    # The provider may canonicalize a retired alias to the current V4 Flash
-    # version, but it must not silently switch to the Pro variant. Guard the
-    # family and variant without freezing a model-catalog version literal.
-    assert result.new_model.startswith("deepseek-v4")
-    assert result.new_model.endswith("-flash")
+    # The provider may expose the base ID or a dated V4 Flash variant, but it
+    # must not silently switch to Pro. Guard the variant without freezing a
+    # model-catalog version literal.
+    assert re.fullmatch(r"deepseek-v4(?:[.-]\d+)*-flash(?:-\d+)?", result.new_model)
     assert "/" not in result.new_model
 
 
