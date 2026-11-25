@@ -25,7 +25,10 @@ _OPENCODE_GO_REQUIRED = {
 @patch.dict(os.environ, {"OPENCODE_GO_API_KEY": "test-key"}, clear=False)
 def test_opencode_go_appears_when_api_key_set():
     """opencode-go should appear in list_authenticated_providers when OPENCODE_GO_API_KEY is set."""
-    providers = list_authenticated_providers(current_provider="openrouter", max_models=50)
+    # Request the untruncated catalog because this test asserts the complete
+    # curated floor; a UI display cap may legitimately omit tail entries after
+    # a live provider catalog grows.
+    providers = list_authenticated_providers(current_provider="openrouter", max_models=None)
 
     # Find opencode-go in results
     opencode_go = next((p for p in providers if p["slug"] == "opencode-go"), None)
